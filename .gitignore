@@ -1,0 +1,50 @@
+# --- Secrets / environment ---
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# --- Bundler / gems ---
+/.bundle/
+/vendor/bundle
+vendor/bundle
+/vendor/cache
+*.gem
+.ruby-gemset
+
+# --- Logs ---
+/log/*.log
+log/*.log
+newrelic_agent.log
+
+# --- Temp / runtime ---
+/tmp/
+tmp/
+*.pid
+*.lock
+!Gemfile.lock
+
+# --- Local databases / dumps ---
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+
+# --- Test / coverage ---
+/coverage/
+coverage/
+/spec/reports/
+.rspec_status
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+.byebug_history
+
+# --- Project-specific ---
+./older
+/older/
