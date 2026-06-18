@@ -51,23 +51,20 @@ class App::Models::User < Sequel::Model
   def send_password_reset_email(base_url)
     generate_reset_token!
     reset_url = "#{base_url}/reset-password?token=#{CGI.escape(reset_token)}"
-    to_email  = email
-    to_name   = full_name
+    html = "<p>Hello #{full_name},</p>" \
+           "<p>We received a request to reset your password. " \
+           "<a href=\"#{reset_url}\">Click here to reset it</a>. " \
+           "This link expires in 2 hours.</p>" \
+           "<p>If you didn't request this, you can ignore this email.</p>"
 
-    mail = Mail.new do
-      from    'noreply@greenaeroview.in'
-      to      to_email
-      subject 'Reset your PlotMate password'
-      html_part do
-        content_type 'text/html; charset=UTF-8'
-        body "<p>Hello #{to_name},</p>" \
-             "<p>We received a request to reset your password. " \
-             "<a href=\"#{reset_url}\">Click here to reset it</a>. " \
-             "This link expires in 2 hours.</p>" \
-             "<p>If you didn't request this, you can ignore this email.</p>"
-      end
-    end
-    mail.deliver!
+    # Use the association's configured SMTP (Settings → Email); falls back to
+    # the process-wide ENV config inside App::Mailer.
+    App::Mailer.deliver(
+      to: email,
+      subject: 'Reset your PlotMate password',
+      html_body: html,
+      client: client_id ? App::Models::Client[client_id] : nil
+    )
   end
 
   # --- serialization -------------------------------------------------------
@@ -82,6 +79,7 @@ class App::Models::User < Sequel::Model
       role: role,
       role_name: role_name,
       active: active,
+      avatar_url: avatar_url,
       title: extras&.dig('title'),
       plot_no: extras&.dig('plot_no'),
       guard_id: extras&.dig('guard_id'),

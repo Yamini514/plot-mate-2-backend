@@ -62,6 +62,41 @@ namespace :db do
 
     puts "Done. Use the demo buttons on the login screen to sign in."
   end
+
+  # Seed sample SMTP config onto the first active client (Settings → Email).
+  # Values come from Backend/.env (EMAIL_* vars) so the password is never
+  # hardcoded and stays in sync with the ENV fallback. Re-running overwrites
+  # the stored config — handy for clearing a stale/wrong saved password.
+  desc "Seed sample SMTP config on the first client (from .env)"
+  task :seed_smtp do
+    require 'bundler'
+    Bundler.require(:default, App.env)
+    App.load!
+
+    client = App::Models::Client.where(active: true).order(:id).first
+    abort 'No active client to attach SMTP config to — run `rake db:seed` first.' unless client
+
+    user = ENV['EMAIL_USER'].to_s
+    smtp = {
+      'enabled'    => true,
+      'host'       => ENV['EMAIL_SMTP_SERVER'].to_s.empty? ? 'smtp.gmail.com' : ENV['EMAIL_SMTP_SERVER'],
+      'port'       => (ENV['EMAIL_PORT'] || 587).to_i,
+      'username'   => user,
+      'password'   => ENV['EMAIL_PASSWORD'].to_s,
+      'security'   => 'starttls',
+      'from_email' => user,                 # Gmail requires the from-address to be the authenticated account
+      'from_name'  => client.name || 'PlotMate',
+      'domain'     => ENV['EMAIL_DOMAIN'].to_s.empty? ? 'gmail.com' : ENV['EMAIL_DOMAIN']
+    }
+
+    client.settings = (client.settings || {}).merge('smtp' => smtp)
+    client.save_changes
+
+    puts "Seeded SMTP on client ##{client.id} — #{client.name}"
+    puts "  host=#{smtp['host']} port=#{smtp['port']} user=#{smtp['username']} " \
+         "security=#{smtp['security']} pw_len=#{smtp['password'].length}"
+    puts '  WARNING: EMAIL_PASSWORD is empty in .env — set it before sending.' if smtp['password'].empty?
+  end
 end
 
 

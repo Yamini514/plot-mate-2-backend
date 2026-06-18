@@ -43,7 +43,7 @@ class App::Services::Plans < App::Services::Base
   end
 
   def self.fields
-    { save: %i[name description amount frequency due_day late_fee_type
+    { save: %i[name description category amount frequency due_day late_fee_type
                late_fee_amount tax_percent property_types auto_invoice active] }
   end
 end

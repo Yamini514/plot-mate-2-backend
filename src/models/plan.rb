@@ -1,12 +1,16 @@
 class App::Models::Plan < Sequel::Model
   FREQUENCIES     = %w[monthly quarterly half_yearly yearly one_time].freeze
   LATE_FEE_TYPES  = %w[fixed percentage].freeze
+  # The fee taxonomy. Anything not in this list falls back to 'other'.
+  CATEGORIES      = %w[maintenance corpus transfer noc penalty water
+                       amenity security construction event other].freeze
 
   def validate
     super
     validates_presence [:name, :client_id]
     validates_includes FREQUENCIES, :frequency        if frequency
     validates_includes LATE_FEE_TYPES, :late_fee_type  if late_fee_type
+    validates_includes CATEGORIES, :category           if category
   end
 
   # Late fee owed on a given base amount (paise), per this plan's rule.
@@ -23,6 +27,7 @@ class App::Models::Plan < Sequel::Model
       id: id,
       name: name,
       description: description,
+      category: category || 'maintenance',
       amount: (amount_paise || 0) / 100,
       frequency: frequency,
       due_day: due_day,

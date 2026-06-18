@@ -2,10 +2,6 @@ class App::Models::Plot < Sequel::Model
   PAYMENT_STATUSES = %w[paid pending unknown].freeze
   MEMBERSHIPS      = %w[verified unverified].freeze
 
-  # Annual maintenance rate. Lives here for now; belongs in association
-  # settings once that module exists. Stored in paise (₹30 / sqyd).
-  RATE_PER_SQYD_PAISE = 30 * 100
-
   def validate
     super
     validates_presence [:plot_no, :client_id]
@@ -14,10 +10,12 @@ class App::Models::Plot < Sequel::Model
     validates_unique([:client_id, :plot_no]) { |ds| ds.where(active: true) }
   end
 
-  # Maintenance dues = size × rate, cleared to zero once paid.
-  def recompute_dues!
-    self.amount_due_paise =
-      payment_status == 'paid' ? 0 : (size_sqyd.to_i * RATE_PER_SQYD_PAISE)
+  # Set the maintenance due from a base-pay amount (paise). The amount itself is
+  # computed by the service from the association's configured rule (per-sqyd or
+  # flat per-plot) — never hardcoded here. Paid plots always clear to zero.
+  def set_base_pay!(base_paise)
+    self.amount_due_paise = payment_status == 'paid' ? 0 : base_paise.to_i
+    self
   end
 
   def amount_due_rupees

@@ -59,7 +59,8 @@ class App::Services::Invoices < App::Services::Base
           client_id: current_client_id, plot_id: plot.id, plan_id: plan.id,
           number: next_invoice_number, owner_name: plot.owner_name,
           property: plot.plot_no, property_type: 'Plot', plan_name: plan.name,
-          period: period, amount_paise: plan.amount_paise, tax_paise: tax,
+          category: plan.category, period: period,
+          amount_paise: plan.amount_paise, tax_paise: tax,
           status: 'generated', issued_on: Date.today, due_date: due
         )
         inv.recompute!
@@ -68,6 +69,29 @@ class App::Services::Invoices < App::Services::Base
       end
     end
     return_success(count: created, period: period)
+  end
+
+  # One-off charge to a single owner — for fees that don't apply fleet-wide
+  # (transfer, NOC, penalty, ad-hoc). Bills the plan's amount to one plot.
+  def charge
+    plot = Plot[client_id: current_client_id, id: params[:plot_id]] ||
+           return_errors!('Plot not found', 404)
+    plan = Plan[client_id: current_client_id, id: params[:plan_id]] ||
+           return_errors!('Fee not found', 404)
+    period = params[:period].presence || default_period(plan)
+    due    = parse_date(params[:due_date]) || Date.today + 10
+    tax    = (plan.amount_paise * (plan.tax_percent || 0)) / 100
+
+    inv = Invoice.new(
+      client_id: current_client_id, plot_id: plot.id, plan_id: plan.id,
+      number: next_invoice_number, owner_name: plot.owner_name,
+      property: plot.plot_no, property_type: 'Plot', plan_name: plan.name,
+      category: plan.category, period: period,
+      amount_paise: plan.amount_paise, tax_paise: tax,
+      status: 'generated', issued_on: Date.today, due_date: due
+    )
+    inv.recompute!
+    save(inv) { |i| return_success(i.as_pos) }
   end
 
   # Bulk workflow transition (send / cancel / generate / mark-paid).
@@ -196,7 +220,7 @@ class App::Services::Invoices < App::Services::Base
   end
 
   def self.fields
-    { save: %i[plot_id plan_id owner_name property property_type plan_name period
-               amount_paise late_fee_paise tax_paise due_date issued_on status] }
+    { save: %i[plot_id plan_id owner_name property property_type plan_name category
+               period amount_paise late_fee_paise tax_paise due_date issued_on status] }
   end
 end

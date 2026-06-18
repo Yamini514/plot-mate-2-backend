@@ -62,6 +62,7 @@ class App::Models::Invoice < Sequel::Model
       property: property,
       property_type: property_type,
       plan_name: plan_name,
+      category: category || 'maintenance',
       period: period,
       amount: (amount_paise || 0) / 100,
       late_fee: (late_fee_paise || 0) / 100,

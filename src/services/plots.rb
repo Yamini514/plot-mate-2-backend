@@ -24,7 +24,7 @@ class App::Services::Plots < App::Services::Base
     # Maintenance dues are NOT auto-applied on create. A new plot starts with a
     # zero balance and only gets billed when the admin explicitly opts in via the
     # `apply_dues` flag (or later through the billing module).
-    obj.recompute_dues! if apply_dues?
+    obj.set_base_pay!(base_pay_paise(obj)) if apply_dues?
     save(obj) { |p| return_success(p.as_pos) }
   end
 
@@ -37,7 +37,7 @@ class App::Services::Plots < App::Services::Base
     if data['payment_status'] == 'paid'
       item.amount_due_paise = 0
     elsif apply_dues?
-      item.recompute_dues!
+      item.set_base_pay!(base_pay_paise(item))
     end
     save(item) { |p| return_success(p.as_pos) }
   end
@@ -92,7 +92,7 @@ class App::Services::Plots < App::Services::Base
         if plot.payment_status == 'paid'
           plot.amount_due_paise = 0
         elsif apply
-          plot.recompute_dues!
+          plot.set_base_pay!(base_pay_paise(plot))
         end
 
         unless plot.valid?
@@ -109,6 +109,30 @@ class App::Services::Plots < App::Services::Base
     end
 
     return_success(created: created, updated: updated, skipped: errors.size, errors: errors)
+  end
+
+  # Apply (regenerate) base pay across many plots at once, using the association's
+  # configured rule. `status` narrows the set (all|pending|unknown); paid plots
+  # are always cleared to zero by set_base_pay!. Idempotent — safe to re-run.
+  def apply_base_pay
+    cfg  = base_pay_config
+    zero = cfg[:mode] == 'per_plot' ? cfg[:flat_paise].zero? : cfg[:rate_paise].zero?
+    return_errors!('Set a base-pay rate under Settings → Fees & Dues first', 400) if zero
+
+    ds = scoped
+    ds = ds.where(payment_status: params[:status]) if params[:status].present? && params[:status] != 'all'
+
+    count = 0
+    total = 0
+    App.db.transaction do
+      ds.each do |plot|
+        plot.set_base_pay!(base_pay_paise(plot))
+        plot.save_changes
+        count += 1
+        total += plot.amount_due_paise.to_i
+      end
+    end
+    return_success(count: count, mode: cfg[:mode], total: total / 100)
   end
 
   # Aggregate counts/dues for the registry header cards.
@@ -132,6 +156,25 @@ class App::Services::Plots < App::Services::Base
   def apply_dues?
     v = params && params[:apply_dues]
     [true, 'true', 1, '1'].include?(v)
+  end
+
+  # The association's base-pay rule, read live from its settings (no hardcoded
+  # rate). `mode` selects per-unit (size × rate) or flat (one amount per plot).
+  def base_pay_config
+    @base_pay_config ||= begin
+      s = (Client[current_client_id]&.settings || {})
+      {
+        mode:       s['base_pay_mode'] == 'per_plot' ? 'per_plot' : 'per_sqyd',
+        rate_paise: ((s['rate_per_sqyd'] || 0).to_f * 100).round,
+        flat_paise: ((s['base_pay_flat'] || 0).to_f * 100).round
+      }
+    end
+  end
+
+  # Base pay (paise) owed by a single plot under the current rule.
+  def base_pay_paise(plot)
+    cfg = base_pay_config
+    cfg[:mode] == 'per_plot' ? cfg[:flat_paise] : plot.size_sqyd.to_i * cfg[:rate_paise]
   end
 
   def self.fields

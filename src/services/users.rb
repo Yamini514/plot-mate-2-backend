@@ -98,6 +98,6 @@ class App::Services::Users < App::Services::Base
   end
 
   def self.fields
-    { save: %i[full_name email password role phone_number active extras] }
+    { save: %i[full_name email password role phone_number active extras avatar_url] }
   end
 end

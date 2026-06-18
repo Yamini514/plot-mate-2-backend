@@ -49,9 +49,11 @@ class App::Routes < Roda
       r.on 'admin' do
         admin_required!
         r.on('users') { do_crud(Users, r, 'CRUDL') }
+        r.on('uploads') { r.post('presign') { Uploads[r].presign } } # presigned S3 URL (or inline fallback)
         r.on 'plots' do
           r.get('summary') { Plots[r].summary }
           r.post('import')  { Plots[r].import_rows }   # bulk upload (Excel/CSV) → upsert by plot_no
+          r.post('apply-base-pay') { Plots[r].apply_base_pay } # bulk (re)generate dues
           do_crud(Plots, r, 'CRUDL')
         end
 
@@ -71,6 +73,7 @@ class App::Routes < Roda
             r.get('defaulters')          { Invoices[r].defaulters }
             r.get('export')              { Invoices[r].export_csv }
             r.post('generate')           { Invoices[r].generate }
+            r.post('charge')             { Invoices[r].charge }           # one-off, single owner
             r.post('status')             { Invoices[r].set_status }       # bulk transition
             r.post('apply-late-fees')    { Invoices[r].apply_late_fees }
             r.post(Integer, 'adjust') { |id| Invoices[r, id: id].adjust } # waiver/discount
@@ -157,9 +160,14 @@ class App::Routes < Roda
             r.get('by-category') { Expenses[r].by_category }
             do_crud(Expenses, r, 'CRUDL')
           end
-          r.on('transactions') { do_crud(Transactions, r, 'L') }
+          r.on 'transactions' do
+            r.post('funds') { Transactions[r].add_funds }
+            r.delete(Integer) { |id| Transactions[r, id: id].delete }
+            do_crud(Transactions, r, 'L')
+          end
         end
         r.on 'settings' do
+          r.post('test-email') { Settings[r].test_email }
           r.get { Settings[r].show }
           r.put { Settings[r].update }
         end

@@ -1,26 +1,21 @@
+# Process-wide SMTP fallback. Only configured when EMAIL_SMTP_SERVER is set, so
+# we don't install broken (all-nil) defaults on boot. Per-association sending is
+# handled by App::Mailer, which sets delivery options per message; this default
+# is only used by any `Mail#deliver!` call that doesn't override delivery_method.
+if !ENV['EMAIL_SMTP_SERVER'].to_s.empty?
+  port = (ENV['EMAIL_PORT'] || 465).to_i
+  options = {
+    address: ENV['EMAIL_SMTP_SERVER'],
+    port: port,
+    domain: ENV['EMAIL_DOMAIN'] || ENV['EMAIL_DOMAN'], # tolerate the legacy misspelled key
+    user_name: ENV['EMAIL_USER'],
+    password: ENV['EMAIL_PASSWORD'],
+    authentication: 'plain',
+    enable_starttls_auto: port != 465,
+    ssl: port == 465
+  }
 
-options = {
-  address: ENV['EMAIL_SMTP_SERVER'],
-  port: 465,
-  domain: ENV['EMAIL_DOMAN'],  # Replace with your domain
-  user_name: ENV['EMAIL_USER'],  # Replace with your email username
-  password: ENV['PASSWORD'],  # Replace with your email password
-  authentication: 'plain',
-  enable_starttls_auto: true,  # If TLS is needed, but for port 465 SSL is directly used
-  ssl: true  # SSL is required on port 465
-}
-
-Mail.defaults do
-  delivery_method :smtp, options
+  Mail.defaults do
+    delivery_method :smtp, options
+  end
 end
-
-
-
-# mail = Mail.new do
-#   from    'noreply@vhrr.net'
-#   to      'sathish@pasupunuri.com'  # Replace with the recipient email
-#   subject 'Test email'
-#   body    'This is a test email sent from a Ruby Roda app!'
-# end
-
-# mail.deliver!
