@@ -2,7 +2,7 @@ class App::Services::Users < App::Services::Base
   def model = User
 
   def frontend_url
-    ENV['FRONTEND_URL'] || 'http://localhost:3000'
+    ENV['FRONTEND_URL']
   end
 
   def list
