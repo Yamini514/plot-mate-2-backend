@@ -11,7 +11,7 @@ class App::Services::Incidents < App::Services::Base
   def get = return_success(item.as_pos)
 
   def create
-    obj = model.new(data_for(:save))
+    obj = model.new(column_safe(data_for(:save)))
     obj.client_id = current_client_id
     obj.code ||= "INC-#{3085 + scoped.count + 1}"
     obj.reported_by ||= App.cu.user_obj.full_name
@@ -21,7 +21,7 @@ class App::Services::Incidents < App::Services::Base
   end
 
   def update
-    data = data_for(:save)
+    data = column_safe(data_for(:save))
     item.set_fields(data, data.keys)
     save(item) { |i| return_success(i.as_pos) }
   end
@@ -34,7 +34,14 @@ class App::Services::Incidents < App::Services::Base
 
   def item(id = rp[:id]) = (@item ||= scoped[id] || return_errors!('Incident not found', 404))
 
+  # Drop any attribute the table doesn't have yet (e.g. `description` before the
+  # 0035 migration runs) so a save never raises on an unknown column.
+  def column_safe(data)
+    cols = model.columns
+    data.select { |k, _| cols.include?(k.to_sym) }
+  end
+
   def self.fields
-    { save: %i[incident_type location severity reported_by status] }
+    { save: %i[incident_type location severity reported_by status description] }
   end
 end

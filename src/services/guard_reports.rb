@@ -93,6 +93,32 @@ class App::Services::GuardReports < App::Services::Base
     return_success(recent.map { |x| { id: x[:id], icon: x[:icon], text: x[:text], time: x[:at]&.strftime('%d %b · %I:%M %p') } })
   end
 
+  # Look up a plot by number within the tenant so the gate can verify a visitor's
+  # destination against the registry before registering them. Always returns a
+  # success envelope (found: true/false) — an unknown plot is a normal result at
+  # the gate, never an error to surface to the guard.
+  def verify_plot
+    cid     = current_client_id
+    plot_no = qs[:plot_no].to_s.strip
+    return return_success(found: false) if plot_no.empty?
+
+    plot = Plot.where(client_id: cid, active: true)
+               .where { Sequel.ilike(:plot_no, plot_no) }.first
+    return return_success(found: false, plot_no: plot_no) unless plot
+
+    return_success(
+      found:      true,
+      plot_no:    plot.plot_no,
+      owner_name: plot.owner_name,
+      phone:      plot.phone,
+      phase:      plot.phase,
+      registered: plot.owner_name.present?
+    )
+  rescue => e
+    App.logger.error("verify_plot error: #{e.message}")
+    return_success(found: false)
+  end
+
   private
 
   def hour_label(h)

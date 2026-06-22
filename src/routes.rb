@@ -26,6 +26,7 @@ class App::Routes < Roda
       # Public endpoints (no auth required)
       r.post('login') { Session[r].login }
       r.post('forgot-password') { Users[r].forgot_password }
+      r.post('verify-otp') { Users[r].verify_otp }
       r.post('validate-password-token') { Users[r].validate_password_token }
       r.post('reset-password') { Users[r].reset_password }
 
@@ -43,6 +44,7 @@ class App::Routes < Roda
         r.get('settings') { Settings[r].show }   # read-only association config (any role)
         r.put('profile') { Users[r].update_self }      # self-edit own contact details
         r.put('update-password') { Users[r].update_password }
+        r.post('logout') { Session[r].logout }   # close the session (and any open guard shift)
       end
 
       # --- Admin-only -------------------------------------------------------
@@ -134,6 +136,7 @@ class App::Routes < Roda
         r.on('deliveries') { do_crud(Deliveries, r, 'CRUDL') }
         r.on 'security' do
           r.get('overview') { Security[r].overview }
+          r.get('guard-sessions') { Security[r].guard_sessions }
           r.on 'incidents' do
             r.post(Integer, 'status') { |id| Incidents[r, id: id].set_status }
             do_crud(Incidents, r, 'CRUDL')
@@ -198,6 +201,7 @@ class App::Routes < Roda
         r.on('blacklist') { do_crud(Blacklist, r, 'CRL') }
         r.on('reports')   { GuardReports[r].summary }
         r.on('residents') { GuardReports[r].residents }
+        r.get('verify-plot')    { GuardReports[r].verify_plot }
         r.get('shift-roster')   { GuardReports[r].shift_roster }
         r.get('recent-actions') { GuardReports[r].recent_actions }
       end

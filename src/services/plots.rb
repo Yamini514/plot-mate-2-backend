@@ -138,11 +138,20 @@ class App::Services::Plots < App::Services::Base
   # Aggregate counts/dues for the registry header cards.
   def summary
     ds = scoped
+    # Lifecycle-status tallies (available/booked/sold/blocked) for the map's
+    # summary cards. A null status (rows created before 0033) counts as available.
+    status_counts = ds.group_and_count(:status).all.each_with_object(Hash.new(0)) do |row, h|
+      h[(row[:status] || 'available')] += row[:count]
+    end
     return_success(
       total_plots:   ds.count,
       paid_count:    ds.where(payment_status: 'paid').count,
       pending_count: ds.where(payment_status: 'pending').count,
       unknown_count: ds.where(payment_status: 'unknown').count,
+      available_count: status_counts['available'],
+      booked_count:    status_counts['booked'],
+      sold_count:      status_counts['sold'],
+      blocked_count:   status_counts['blocked'],
       outstanding:   (ds.where(payment_status: 'pending').sum(:amount_due_paise) || 0) / 100
     )
   end
@@ -178,6 +187,6 @@ class App::Services::Plots < App::Services::Base
   end
 
   def self.fields
-    { save: %i[plot_no owner_name phone email size_sqyd phase membership payment_status active] }
+    { save: %i[plot_no owner_name phone email size_sqyd phase membership status payment_status active] }
   end
 end

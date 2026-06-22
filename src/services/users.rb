@@ -57,15 +57,38 @@ class App::Services::Users < App::Services::Base
     save(u) { return_success('Password updated successfully') }
   end
 
-  # --- password reset (public) ---------------------------------------------
+  # --- password reset via OTP (public) -------------------------------------
+  # Step 1: email a 6-digit code. By product decision this surfaces a clear
+  # error when the address isn't registered (rather than the usual generic
+  # "if it exists…" reply), so plot owners and guards know to check the email
+  # they actually signed up with.
   def forgot_password
     email = params[:email].to_s.strip.downcase
     return_errors!('Email is required', 400) if email.empty?
 
     user = model.where(email: email, active: true).first
-    user&.send_password_reset_email(frontend_url)
-    # Don't leak whether the email exists.
-    return_success('If that email is registered, a reset link has been sent.')
+    return_errors!('No account is registered with that email address.', 404) unless user
+
+    user.send_password_reset_otp
+    return_success('We’ve emailed you a 6-digit verification code.')
+  end
+
+  # Step 2: verify the code. A valid code is exchanged for a single-use reset
+  # token that authorises the final reset-password call.
+  def verify_otp
+    email = params[:email].to_s.strip.downcase
+    code  = params[:otp].to_s.strip
+    return_errors!('Email and code are required', 400) if email.empty? || code.empty?
+
+    user = model.where(email: email, active: true).first
+    return_errors!('No account is registered with that email address.', 404) unless user
+
+    if user.reset_otp_valid?(code)
+      return_success(token: user.consume_otp_issue_token!)
+    else
+      user.register_failed_otp_attempt!
+      return_errors!('That code is invalid or has expired. Please request a new one.', 400)
+    end
   end
 
   def validate_password_token
