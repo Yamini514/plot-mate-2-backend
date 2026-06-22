@@ -124,9 +124,20 @@ class App::Models::User < Sequel::Model
     reset_token
   end
 
-  def send_password_reset_otp
+  # Deliver a fresh reset code over the chosen channel. 'whatsapp' messages the
+  # owner's registered phone via the Cloud API template; anything else emails it.
+  # Raises (via the messenger) on send failure so the caller can report why.
+  def send_password_reset_otp(channel = 'email')
     otp = generate_reset_otp!
     client = client_id ? App::Models::Client[client_id] : nil
+
+    if channel.to_s == 'whatsapp'
+      raise 'No phone number is on file for this account.' if phone_number.to_s.strip.empty?
+      # Per-association WhatsApp (Settings → WhatsApp); falls back to ENV.
+      App::WhatsApp.send_otp(to: phone_number, code: otp, client: client)
+      return
+    end
+
     html = App::Mailer.branded_email(
       client: client,
       heading: 'Your password reset code',

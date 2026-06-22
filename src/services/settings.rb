@@ -8,6 +8,7 @@ class App::Services::Settings < App::Services::Base
     c = Client[current_client_id]
     incoming = (params || {}).reject { |k, _| %w[name email].include?(k.to_s) }
     incoming = merge_smtp(c, incoming)
+    incoming = merge_whatsapp(c, incoming)
     c.settings = (c.settings || {}).merge(incoming)
     c.name  = params[:name]  if params[:name].present?
     c.email = params[:email] if params[:email].present?
@@ -51,8 +52,8 @@ class App::Services::Settings < App::Services::Base
     App.cu.user_obj&.admin?
   end
 
-  # The client config shaped for the frontend. The SMTP password is never sent
-  # back (only a `password_set` flag); non-admins don't receive SMTP config at all.
+  # The client config shaped for the frontend. Secrets are never sent back (only
+  # a `*_set` flag); non-admins don't receive the credential-bearing config at all.
   def public_settings(c)
     s = (c.settings || {}).dup
     if s['smtp'].is_a?(Hash)
@@ -63,6 +64,16 @@ class App::Services::Settings < App::Services::Base
         s = s.merge('smtp' => smtp)
       else
         s = s.reject { |k, _| k.to_s == 'smtp' }
+      end
+    end
+    if s['whatsapp'].is_a?(Hash)
+      if admin?
+        wa = s['whatsapp'].dup
+        wa['access_token_set'] = !wa['access_token'].to_s.empty?
+        wa.delete('access_token')
+        s = s.merge('whatsapp' => wa)
+      else
+        s = s.reject { |k, _| k.to_s == 'whatsapp' }
       end
     end
     s.merge(name: c.name, email: c.email)
@@ -77,6 +88,17 @@ class App::Services::Settings < App::Services::Base
     smtp.delete('password_set')
     smtp['password'] = existing['password'] if smtp['password'].to_s.empty?
     incoming.merge('smtp' => smtp)
+  end
+
+  # Preserve the stored WhatsApp access token when the incoming payload leaves it
+  # blank (the frontend never receives the token, so blank means "unchanged").
+  def merge_whatsapp(c, incoming)
+    return incoming unless incoming['whatsapp'].is_a?(Hash)
+    existing = (c.settings || {})['whatsapp'] || {}
+    wa = incoming['whatsapp'].to_h.dup
+    wa.delete('access_token_set')
+    wa['access_token'] = existing['access_token'] if wa['access_token'].to_s.empty?
+    incoming.merge('whatsapp' => wa)
   end
 
   # Layer any just-entered (non-blank) SMTP fields over the saved/ENV config.

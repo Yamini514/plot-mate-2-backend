@@ -58,19 +58,34 @@ class App::Services::Users < App::Services::Base
   end
 
   # --- password reset via OTP (public) -------------------------------------
-  # Step 1: email a 6-digit code. By product decision this surfaces a clear
-  # error when the address isn't registered (rather than the usual generic
-  # "if it exists…" reply), so plot owners and guards know to check the email
-  # they actually signed up with.
+  # Step 1: send a 6-digit code over the chosen channel (email | whatsapp). By
+  # product decision this surfaces a clear error when the address isn't
+  # registered (rather than the usual generic "if it exists…" reply), so plot
+  # owners and guards know to check the email they actually signed up with.
   def forgot_password
     email = params[:email].to_s.strip.downcase
     return_errors!('Email is required', 400) if email.empty?
+    channel = params[:channel].to_s == 'whatsapp' ? 'whatsapp' : 'email'
 
     user = model.where(email: email, active: true).first
     return_errors!('No account is registered with that email address.', 404) unless user
 
-    user.send_password_reset_otp
-    return_success('We’ve emailed you a 6-digit verification code.')
+    if channel == 'whatsapp' && user.phone_number.to_s.strip.empty?
+      return_errors!('No phone number is on file for this account — use email instead.', 422)
+    end
+
+    begin
+      user.send_password_reset_otp(channel)
+    rescue => e
+      App.logger.error("OTP send failed (#{channel}): #{e.class}: #{e.message}")
+      via = channel == 'whatsapp' ? 'WhatsApp' : 'email'
+      return_errors!("We couldn’t send the code over #{via}: #{e.message}", 422)
+    end
+
+    msg = channel == 'whatsapp' ?
+      'We’ve sent a 6-digit code to your registered WhatsApp number.' :
+      'We’ve emailed you a 6-digit verification code.'
+    return_success(msg)
   end
 
   # Step 2: verify the code. A valid code is exchanged for a single-use reset
