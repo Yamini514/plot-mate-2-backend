@@ -10,6 +10,7 @@ class App::Models::BlacklistEntry < Sequel::Model
 
   def as_pos
     { id: id, code: code, kind: kind, name: name, phone: phone, plate: plate,
-      model: model, reason: reason, added_by: added_by, attempts: attempts, status: status }
+      model: model, reason: reason, added_by: added_by, attempts: attempts || 0,
+      status: status, added_on: created_at, created_at: created_at }
   end
 end

@@ -114,5 +114,83 @@ module App
     def strip_html(html)
       html.to_s.gsub(/<[^>]+>/, ' ').gsub(/\s+/, ' ').strip
     end
+
+    # --- branded email template ----------------------------------------------
+    # Wraps message content in a responsive, email-client-safe layout (table
+    # based, all-inline CSS). Renders an optional highlighted OTP code and/or a
+    # call-to-action button. The association name (when known) personalises the
+    # header and footer.
+    #
+    #   App::Mailer.branded_email(
+    #     client:, heading:, intro:, code: '123456',
+    #     button_label: 'Reset password', button_url: 'https://…',
+    #     outro: 'This code expires in 10 minutes.')
+    def branded_email(heading:, intro:, client: nil, code: nil, button_label: nil, button_url: nil, outro: nil)
+      brand   = '#047857'  # brand-700
+      brand_d = '#065f46'  # brand-800
+      org     = (client&.name.to_s.empty? ? 'PlotMate' : client.name)
+      year    = Time.now.year
+
+      code_block = if code
+        <<~HTML
+          <tr><td style="padding:8px 40px 0">
+            <div style="margin:8px 0;padding:20px;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;text-align:center">
+              <div style="font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#64748b">Verification code</div>
+              <div style="margin-top:10px;font-family:'Courier New',monospace;font-size:34px;font-weight:700;letter-spacing:10px;color:#0f172a">#{code}</div>
+            </div>
+          </td></tr>
+        HTML
+      else
+        ''
+      end
+
+      button_block = if button_label && button_url
+        <<~HTML
+          <tr><td style="padding:12px 40px 4px">
+            <a href="#{button_url}" style="display:inline-block;background:#{brand};color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:13px 28px;border-radius:10px">#{button_label}</a>
+          </td></tr>
+          <tr><td style="padding:0 40px 4px;font-size:12px;color:#94a3b8;word-break:break-all">Or paste this link into your browser:<br>#{button_url}</td></tr>
+        HTML
+      else
+        ''
+      end
+
+      outro_block = outro ? %(<tr><td style="padding:8px 40px 0;font-size:14px;line-height:22px;color:#64748b">#{outro}</td></tr>) : ''
+
+      <<~HTML
+        <!doctype html>
+        <html lang="en">
+        <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>#{heading}</title></head>
+        <body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:32px 16px">
+            <tr><td align="center">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,.08)">
+                <!-- header -->
+                <tr><td style="background:linear-gradient(135deg,#{brand},#{brand_d});padding:28px 40px">
+                  <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+                    <td style="font-size:20px;font-weight:700;color:#ffffff;letter-spacing:-.01em">PlotMate</td>
+                  </tr></table>
+                  <div style="margin-top:2px;font-size:12px;color:#d1fae5">#{org}</div>
+                </td></tr>
+                <!-- body -->
+                <tr><td style="padding:32px 40px 8px"><h1 style="margin:0;font-size:20px;font-weight:700;color:#0f172a">#{heading}</h1></td></tr>
+                <tr><td style="padding:8px 40px 0;font-size:15px;line-height:24px;color:#334155">#{intro}</td></tr>
+                #{code_block}
+                #{button_block}
+                #{outro_block}
+                <tr><td style="padding:28px 40px 0"><hr style="border:none;border-top:1px solid #e2e8f0;margin:0"></td></tr>
+                <tr><td style="padding:16px 40px 32px;font-size:12px;line-height:20px;color:#94a3b8">
+                  If you didn’t request this, you can safely ignore this email — no changes will be made to your account.
+                </td></tr>
+              </table>
+              <div style="max-width:560px;margin:16px auto 0;font-size:11px;color:#94a3b8;text-align:center">
+                &copy; #{year} #{org} · Powered by PlotMate · Plot-owners’ association management
+              </div>
+            </td></tr>
+          </table>
+        </body>
+        </html>
+      HTML
+    end
   end
 end

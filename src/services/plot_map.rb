@@ -37,25 +37,51 @@ class App::Services::PlotMap < App::Services::Base
     return_success(removed: true)
   end
 
-  # PUT /admin/plot-map/regions — replace the full set of rectangles in one shot.
-  # Body: { regions: [{ plot_id, x, y, w, h }, ...] }
+  # PUT /admin/plot-map/regions — replace the full set of regions in one shot.
+  # Body: { regions: [ region, ... ] } where each region is either
+  #   a clickable plot:  { kind: 'plot', plot_id, x, y, w, h, points }
+  #   a static label:    { kind: 'label', label, label_type, x, y, w, h, points }
+  # `points` is an optional array of [x, y] percentage pairs (a polygon); when
+  # present it overrides x/y/w/h, which are recomputed as its bounding box so
+  # the legacy rectangle view still renders something sensible. Omitting kind
+  # (the old payload) is treated as a plot region — fully backward compatible.
   def save_regions
     layout = active_layout
     return_errors!('Import a layout before mapping plots', 400) unless layout
 
     valid_ids = Plot.where(client_id: current_client_id, active: true).select_map(:id)
+    now = Time.now
+
     rows = Array(params && params[:regions]).filter_map do |reg|
-      pid = reg[:plot_id].to_i
-      next unless valid_ids.include?(pid)
-      {
+      kind = reg[:kind].to_s == 'label' ? 'label' : 'plot'
+      pts  = sanitize_points(reg[:points])
+      box  = pts ? bbox(pts) : { x: reg[:x], y: reg[:y], w: reg[:w], h: reg[:h] }
+
+      # Every row carries the same columns (multi_insert needs a uniform key
+      # set); plot vs label just decides which of plot_id / label are filled.
+      base = {
         client_id: current_client_id,
         layout_id: layout.id,
-        plot_id:   pid,
-        x: clamp_pct(reg[:x]), y: clamp_pct(reg[:y]),
-        w: clamp_pct(reg[:w]), h: clamp_pct(reg[:h]),
+        kind: kind,
+        plot_id: nil,
+        label: nil,
+        label_type: nil,
+        x: clamp_pct(box[:x]), y: clamp_pct(box[:y]),
+        w: clamp_pct(box[:w]), h: clamp_pct(box[:h]),
+        points: pts&.to_json,
         active: true,
-        created_at: Time.now, updated_at: Time.now
+        created_at: now, updated_at: now
       }
+
+      if kind == 'label'
+        label = reg[:label].to_s.strip
+        next if label.empty?
+        base.merge(label: label, label_type: reg[:label_type].presence)
+      else
+        pid = reg[:plot_id].to_i
+        next unless valid_ids.include?(pid)
+        base.merge(plot_id: pid)
+      end
     end
 
     App.db.transaction do
@@ -66,6 +92,25 @@ class App::Services::PlotMap < App::Services::Base
   end
 
   private
+
+  # Coerce an incoming polygon into a clean array of [x, y] percentage pairs,
+  # or nil if it isn't a usable polygon (need at least a triangle).
+  def sanitize_points(raw)
+    return nil unless raw.is_a?(Array) && raw.size >= 3
+    pts = raw.filter_map do |p|
+      x, y = p.is_a?(Array) ? p : [p && p[:x], p && p[:y]]
+      next if x.nil? || y.nil?
+      [clamp_pct(x), clamp_pct(y)]
+    end
+    pts.size >= 3 ? pts : nil
+  end
+
+  # Axis-aligned bounding box of a polygon, as top-left + size percentages.
+  def bbox(pts)
+    xs = pts.map { |p| p[0] }
+    ys = pts.map { |p| p[1] }
+    { x: xs.min, y: ys.min, w: xs.max - xs.min, h: ys.max - ys.min }
+  end
 
   def active_layout
     @active_layout ||= scoped.where(active: true).order(Sequel.desc(:id)).first

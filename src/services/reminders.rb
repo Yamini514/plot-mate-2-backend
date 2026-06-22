@@ -38,11 +38,19 @@ class App::Services::Reminders < App::Services::Base
 
   private
 
-  # Send the reminder over its channel. Email is wired to the owner's inbox via
-  # the association's SMTP; SMS/WhatsApp are recorded for now (no gateway yet).
-  # Never raises — returns a delivery summary the UI can surface.
+  # Send the reminder over its channel. Email goes to the owner's inbox via the
+  # association's SMTP; WhatsApp uses the Cloud API template (Settings →
+  # WhatsApp). SMS has no gateway yet and is just recorded. Never raises —
+  # returns a delivery summary the UI can surface.
   def deliver_reminder(r)
-    return { ok: true, channel: r.channel, recorded: true } unless r.channel == 'email'
+    case r.channel
+    when 'email'    then deliver_email(r)
+    when 'whatsapp' then deliver_whatsapp(r)
+    else { ok: true, channel: r.channel, recorded: true }
+    end
+  end
+
+  def deliver_email(r)
     return { ok: true, channel: 'email', recorded: true, sent: false } unless r.status == 'sent'
 
     to = params[:email].presence || owner_email(r)
@@ -61,10 +69,37 @@ class App::Services::Reminders < App::Services::Base
     { ok: false, channel: 'email', error: e.message }
   end
 
+  def deliver_whatsapp(r)
+    return { ok: true, channel: 'whatsapp', recorded: true, sent: false } unless r.status == 'sent'
+
+    to = params[:phone].presence || owner_phone(r)
+    return { ok: false, channel: 'whatsapp', error: 'No phone number on file for this owner.' } if to.to_s.strip.empty?
+
+    client = Client[current_client_id]
+    res = App::WhatsApp.send_reminder(
+      to: to.to_s.strip,
+      owner_name: r.owner_name || 'Owner',
+      amount: format_rupees(r.amount_paise),
+      plot_no: r.plot_no,
+      association: client.name,
+      client: client
+    )
+    { ok: true, channel: 'whatsapp', sent: true, to: to, id: res[:id] }
+  rescue => e
+    App.logger.error("Reminder WhatsApp failed: #{e.class}: #{e.message}")
+    { ok: false, channel: 'whatsapp', error: e.message }
+  end
+
   # The owner's email — from the linked plot's registry record.
   def owner_email(r)
     return nil if r.plot_no.to_s.empty?
     Plot.where(client_id: current_client_id, plot_no: r.plot_no).first&.email
+  end
+
+  # The owner's phone — from the linked plot's registry record.
+  def owner_phone(r)
+    return nil if r.plot_no.to_s.empty?
+    Plot.where(client_id: current_client_id, plot_no: r.plot_no).first&.phone
   end
 
   def reminder_html(r, client)

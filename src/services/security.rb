@@ -63,4 +63,28 @@ class App::Services::Security < App::Services::Base
       alerts:             alerts
     )
   end
+
+  # Guard attendance: most recent shift sessions (login → logout timings) with
+  # the guard's name/id attached. Active sessions (no ended_at) are "on duty".
+  def guard_sessions
+    # Dormant until the shift_sessions migration runs — return an empty log
+    # rather than 500 so the admin page still renders cleanly.
+    return return_success([]) unless App::Models.const_defined?(:ShiftSession)
+
+    cid    = current_client_id
+    guards = User.where(client_id: cid, role: User::ROLES[:guard]).all
+                 .each_with_object({}) { |g, h| h[g.id] = g }
+
+    sessions = ShiftSession.where(client_id: cid)
+                           .order(Sequel.desc(:started_at)).limit(60).all
+
+    return_success(sessions.map do |s|
+      g = guards[s.user_id]
+      s.as_pos.merge(
+        guard_name: g&.full_name || 'Former guard',
+        guard_id:   g&.extras&.dig('guard_id'),
+        title:      g&.extras&.dig('title') || 'Security Guard'
+      )
+    end)
+  end
 end
