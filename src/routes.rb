@@ -35,6 +35,25 @@ class App::Routes < Roda
 
       r.get('version') { { status: 'success', version: 1 } }
 
+      # TEMP diagnostic — probes outbound TCP reachability to common SMTP ports
+      # so we can confirm which ports the host (e.g. Render free tier) blocks.
+      # Open /api/smtp-check in a browser; remove this route once debugging is done.
+      r.get('smtp-check') do
+        require 'socket'
+        targets = [
+          ['smtp.gmail.com', 587], ['smtp.gmail.com', 465], ['smtp.gmail.com', 25]
+        ]
+        results = targets.map do |host, port|
+          begin
+            Socket.tcp(host, port, connect_timeout: 5) { |s| s.close }
+            { target: "#{host}:#{port}", reachable: true }
+          rescue => e
+            { target: "#{host}:#{port}", reachable: false, error: e.message }
+          end
+        end
+        { status: 'success', data: results }
+      end
+
       # Authentication required for all routes below
       auth_required!
 
