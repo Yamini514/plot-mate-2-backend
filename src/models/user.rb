@@ -1,13 +1,15 @@
 class App::Models::User < Sequel::Model
-  # Canonical role enum (matches the three frontend personas).
-  ROLES = { member: 0, guard: 1, admin: 2 }.freeze
+  # Canonical role enum. Roles 0–2 are venture-scoped personas; super_admin (3)
+  # is a platform-layer role that sits above all ventures (no client_id).
+  ROLES = { member: 0, guard: 1, admin: 2, super_admin: 3 }.freeze
   RESET_TOKEN_EXPIRY = 2 * 60 * 60 # 2 hours
   RESET_OTP_EXPIRY   = 10 * 60     # 10 minutes
   MAX_OTP_ATTEMPTS   = 5           # wrong guesses before the code is burned
 
-  def member? = role == ROLES[:member]
-  def guard?  = role == ROLES[:guard]
-  def admin?  = role == ROLES[:admin]
+  def member?      = role == ROLES[:member]
+  def guard?       = role == ROLES[:guard]
+  def admin?       = role == ROLES[:admin]
+  def super_admin? = role == ROLES[:super_admin]
 
   def role_name
     ROLES.key(role)&.to_s || 'unknown'
@@ -36,7 +38,9 @@ class App::Models::User < Sequel::Model
 
   def validate
     super
-    validates_presence [:full_name, :email, :role, :client_id]
+    validates_presence [:full_name, :email, :role]
+    # Venture-scoped roles must belong to a client; a super admin is platform-level.
+    validates_presence :client_id unless super_admin?
     validates_includes ROLES.values, :role
     validates_unique(:email) { |ds| ds.where(active: true) }
     if phone_number.to_s.strip != '' && phone_number.to_s.strip !~ PHONE_RE
