@@ -4,11 +4,11 @@
 # is only used by any `Mail#deliver!` call that doesn't override delivery_method.
 if !ENV['EMAIL_SMTP_SERVER'].to_s.empty?
   port = (ENV['EMAIL_PORT'] || 465).to_i
-  LOGGER.info "SMTP HOST=#{ENV['EMAIL_SMTP_SERVER']}"
-  LOGGER.info "SMTP PORT=#{ENV['EMAIL_PORT']}"
-  LOGGER.info "SMTP USER=#{ENV['EMAIL_USER']}"
-  LOGGER.info "SMTP SSL=#{port == 465}"
-  LOGGER.info "SMTP STARTTLS=#{port != 465}"
+  App.logger.info "SMTP HOST=#{ENV['EMAIL_SMTP_SERVER']}"
+  App.logger.info "SMTP PORT=#{ENV['EMAIL_PORT']}"
+  App.logger.info "SMTP USER=#{ENV['EMAIL_USER']}"
+  App.logger.info "SMTP SSL=#{port == 465}"
+  App.logger.info "SMTP STARTTLS=#{port != 465}"
   options = {
     address: ENV['EMAIL_SMTP_SERVER'],
     port: port,
