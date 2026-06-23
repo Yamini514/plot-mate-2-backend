@@ -4,6 +4,11 @@
 # is only used by any `Mail#deliver!` call that doesn't override delivery_method.
 if !ENV['EMAIL_SMTP_SERVER'].to_s.empty?
   port = (ENV['EMAIL_PORT'] || 465).to_i
+  LOGGER.info "SMTP HOST=#{ENV['EMAIL_SMTP_SERVER']}"
+  LOGGER.info "SMTP PORT=#{ENV['EMAIL_PORT']}"
+  LOGGER.info "SMTP USER=#{ENV['EMAIL_USER']}"
+  LOGGER.info "SMTP SSL=#{port == 465}"
+  LOGGER.info "SMTP STARTTLS=#{port != 465}"
   options = {
     address: ENV['EMAIL_SMTP_SERVER'],
     port: port,
@@ -17,5 +22,6 @@ if !ENV['EMAIL_SMTP_SERVER'].to_s.empty?
 
   Mail.defaults do
     delivery_method :smtp, options
+    
   end
 end
