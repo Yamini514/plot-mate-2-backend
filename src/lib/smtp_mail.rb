@@ -16,8 +16,8 @@ if !ENV['EMAIL_SMTP_SERVER'].to_s.empty?
     user_name: ENV['EMAIL_USER'],
     password: ENV['EMAIL_PASSWORD'],
     authentication: 'plain',
-    enable_starttls_auto: port != 465,
-    ssl: port == 465
+    enable_starttls_auto: true,
+    ssl: false
   }
 
   Mail.defaults do
