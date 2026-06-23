@@ -1,7 +1,11 @@
 class App::Services::Settings < App::Services::Base
   # Association config stored on the client (rate, bank, committee, SMTP, etc.).
+  # A platform-level super admin has no client, so return empty config rather
+  # than erroring — the shell then falls back to neutral defaults.
   def show
-    return_success(public_settings(Client[current_client_id]))
+    c = current_client_id && Client[current_client_id]
+    return return_success({}) unless c
+    return_success(public_settings(c))
   end
 
   def update

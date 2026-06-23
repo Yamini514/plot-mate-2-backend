@@ -30,6 +30,10 @@ class App::Routes < Roda
       r.post('validate-password-token') { Users[r].validate_password_token }
       r.post('reset-password') { Users[r].reset_password }
 
+      # A prospective venture requests a workspace (no auth — they have no
+      # account yet). The super admin reviews and approves it.
+      r.post('onboarding-requests') { Onboarding[r].submit }
+
       # Stripe webhook — public but signature-verified (source of truth)
       r.post('stripe/webhook') { StripeBilling[r].webhook }
 
@@ -64,6 +68,24 @@ class App::Routes < Roda
         r.put('profile') { Users[r].update_self }      # self-edit own contact details
         r.put('update-password') { Users[r].update_password }
         r.post('logout') { Session[r].logout }   # close the session (and any open guard shift)
+      end
+
+      # --- Super-admin only (platform layer) --------------------------------
+      # Sits above all ventures: review onboarding requests, activate/suspend
+      # workspaces. Not tenant-scoped.
+      r.on 'super' do
+        super_admin_required!
+        r.get('overview') { Ventures[r].overview }
+        r.on 'onboarding' do
+          r.post(Integer, 'approve') { |id| Onboarding[r, id: id].approve }
+          r.post(Integer, 'reject')  { |id| Onboarding[r, id: id].reject }
+          do_crud(Onboarding, r, 'RL')
+        end
+        r.on 'ventures' do
+          r.post(Integer, 'suspend')  { |id| Ventures[r, id: id].suspend }
+          r.post(Integer, 'activate') { |id| Ventures[r, id: id].activate }
+          do_crud(Ventures, r, 'RL')
+        end
       end
 
       # --- Admin-only -------------------------------------------------------
@@ -301,6 +323,10 @@ class App::Routes < Roda
 
   def admin_required!
     forbidden! unless App.cu.user_obj&.admin?
+  end
+
+  def super_admin_required!
+    forbidden! unless App.cu.user_obj&.super_admin?
   end
 
   def guard_required!
