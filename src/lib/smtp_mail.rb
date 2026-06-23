@@ -10,15 +10,17 @@ if !ENV['EMAIL_SMTP_SERVER'].to_s.empty?
   App.logger.info "SMTP SSL=#{port == 465}"
   App.logger.info "SMTP STARTTLS=#{port != 465}"
   options = {
-    address: ENV['EMAIL_SMTP_SERVER'],
-    port: port,
-    domain: ENV['EMAIL_DOMAIN'] || ENV['EMAIL_DOMAN'], # tolerate the legacy misspelled key
-    user_name: ENV['EMAIL_USER'],
-    password: ENV['EMAIL_PASSWORD'],
-    authentication: 'plain',
-    enable_starttls_auto: true,
-    ssl: false
-  }
+  address: ENV['EMAIL_SMTP_SERVER'],
+  port: port,
+  domain: ENV['EMAIL_DOMAIN'] || ENV['EMAIL_DOMAN'],
+  user_name: ENV['EMAIL_USER'],
+  password: ENV['EMAIL_PASSWORD'],
+  authentication: :plain,
+  enable_starttls_auto: true,
+  ssl: false,
+  open_timeout: 30,
+  read_timeout: 30
+}
 
   Mail.defaults do
     delivery_method :smtp, options
