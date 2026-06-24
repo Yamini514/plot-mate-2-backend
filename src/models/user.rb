@@ -182,6 +182,10 @@ class App::Models::User < Sequel::Model
       agency: extras&.dig('agency'),
       supervisor_name: extras&.dig('supervisor_name'),
       supervisor_phone: extras&.dig('supervisor_phone'),
+      # KYC / verification (owners) — see migration 0046.
+      kyc_status: respond_to?(:kyc_status) ? (kyc_status || 'not_submitted') : 'not_submitted',
+      kyc_data: respond_to?(:kyc_data) ? (kyc_data || {}) : {},
+      verified_at: respond_to?(:verified_at) ? verified_at : nil,
       last_logged_in_at: last_logged_in_at,
       created_at: created_at
     }

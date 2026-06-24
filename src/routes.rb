@@ -31,8 +31,10 @@ class App::Routes < Roda
       r.post('reset-password') { Users[r].reset_password }
 
       # A prospective venture requests a workspace (no auth — they have no
-      # account yet). The super admin reviews and approves it.
+      # account yet). The super admin reviews and approves it. Documents can be
+      # attached mid-intake, keyed by the request's human code.
       r.post('onboarding-requests') { Onboarding[r].submit }
+      r.post('onboarding-requests/:code/documents') { |code| Onboarding[r, code: code].attach_document }
 
       # Stripe webhook — public but signature-verified (source of truth)
       r.post('stripe/webhook') { StripeBilling[r].webhook }
@@ -75,16 +77,76 @@ class App::Routes < Roda
       # workspaces. Not tenant-scoped.
       r.on 'super' do
         super_admin_required!
-        r.get('overview') { Ventures[r].overview }
+
+        # 1. Dashboard
+        r.get('overview')        { Ventures[r].overview }
+        r.get('overview/trends') { Analytics[r].trends }
+
+        # 2. Venture management  (search/filter via query string on the list)
+        r.on 'ventures' do
+          r.post(Integer, 'suspend')         { |id| Ventures[r, id: id].suspend }
+          r.post(Integer, 'activate')        { |id| Ventures[r, id: id].activate }
+          r.post(Integer, 'request-changes') { |id| Ventures[r, id: id].request_changes }
+          r.post(Integer, 'archive')         { |id| Ventures[r, id: id].archive }
+          r.post(Integer, 'support-access')  { |id| Ventures[r, id: id].grant_support_access }
+          r.get(Integer, 'documents')        { |id| Ventures[r, id: id].documents }
+          r.get(Integer, 'admins')           { |id| Ventures[r, id: id].admins }
+          do_crud(Ventures, r, 'RL')
+        end
+
+        # 3. Venture requests (onboarding)
         r.on 'onboarding' do
-          r.post(Integer, 'approve') { |id| Onboarding[r, id: id].approve }
-          r.post(Integer, 'reject')  { |id| Onboarding[r, id: id].reject }
+          r.post(Integer, 'approve')         { |id| Onboarding[r, id: id].approve }
+          r.post(Integer, 'reject')          { |id| Onboarding[r, id: id].reject }
+          r.post(Integer, 'request-changes') { |id| Onboarding[r, id: id].request_changes }
+          r.get(Integer, 'documents')        { |id| Onboarding[r, id: id].documents }
+          r.post(Integer, 'documents', Integer, 'verify') { |id, doc| Onboarding[r, id: id, doc: doc].verify_document }
           do_crud(Onboarding, r, 'RL')
         end
-        r.on 'ventures' do
-          r.post(Integer, 'suspend')  { |id| Ventures[r, id: id].suspend }
-          r.post(Integer, 'activate') { |id| Ventures[r, id: id].activate }
-          do_crud(Ventures, r, 'RL')
+
+        # 4. Venture Admin management
+        r.on 'venture-admins' do
+          r.post(Integer, 'activate')       { |id| VentureAdmins[r, id: id].activate }
+          r.post(Integer, 'deactivate')     { |id| VentureAdmins[r, id: id].deactivate }
+          r.post(Integer, 'reset-password') { |id| VentureAdmins[r, id: id].reset_password }
+          do_crud(VentureAdmins, r, 'RL')
+        end
+
+        # 5. User management (all users, all ventures)
+        r.on 'users' do
+          r.post(Integer, 'block')          { |id| PlatformUsers[r, id: id].block }
+          r.post(Integer, 'unblock')        { |id| PlatformUsers[r, id: id].unblock }
+          r.post(Integer, 'reset-password') { |id| PlatformUsers[r, id: id].reset_password }
+          do_crud(PlatformUsers, r, 'RL')
+        end
+
+        # 6. Support & tickets
+        r.on 'tickets' do
+          r.post(Integer, 'assign')   { |id| PlatformTickets[r, id: id].assign }
+          r.post(Integer, 'status')   { |id| PlatformTickets[r, id: id].update_status }
+          r.post(Integer, 'reply')    { |id| PlatformTickets[r, id: id].reply }
+          r.post(Integer, 'escalate') { |id| PlatformTickets[r, id: id].escalate }
+          do_crud(PlatformTickets, r, 'CRL')
+        end
+
+        # 7. Audit logs (read-only)
+        r.on('audit-logs') { do_crud(AuditLogs, r, 'L') }
+
+        # 8. Global settings
+        r.on 'settings' do
+          r.get                { PlatformSettings[r].show }
+          r.put                { PlatformSettings[r].update }
+          r.post('test-email') { PlatformSettings[r].test_email }
+        end
+
+        # 9. Reports & analytics
+        r.on 'reports' do
+          r.get('venture-growth') { Analytics[r].venture_growth }
+          r.get('user-growth')    { Analytics[r].user_growth }
+          r.get('registrations')  { Analytics[r].registration_trends }
+          r.get('active-ventures'){ Analytics[r].active_ventures }
+          r.get('revenue')        { Analytics[r].revenue }
+          r.get('export')         { Analytics[r].export }
         end
       end
 
