@@ -57,8 +57,15 @@ class App::Services::Invites < App::Services::Base
   def show
     inv = by_token
     return_errors!('This invite link is invalid or has expired', 404) unless inv&.usable?
-    plot = inv.plot_id ? Plot[inv.plot_id] : nil
-    return_success(inv.as_public.merge(plot_no: plot&.plot_no))
+    plot    = inv.plot_id ? Plot[inv.plot_id] : nil
+    client  = Client[inv.client_id]
+    inviter = inv.invited_by ? User[inv.invited_by] : nil
+    return_success(inv.as_public.merge(
+      plot_no:         plot&.plot_no,
+      community:       client&.name,
+      invited_by_name: inviter&.full_name,
+      expires_at:      inv.expires_at
+    ))
   end
 
   # The recipient completes their profile + KYC. Creates the login (role from

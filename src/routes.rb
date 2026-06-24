@@ -36,6 +36,14 @@ class App::Routes < Roda
       r.post('onboarding-requests') { Onboarding[r].submit }
       r.post('onboarding-requests/:code/documents') { |code| Onboarding[r, code: code].attach_document }
 
+      # Admin-issued onboarding invite — the recipient views and accepts it by
+      # token (no account yet). Accepting creates their login + an owner
+      # verification request for the admin to review. (Roda string matchers are
+      # literal — the token segment must be captured with the String class, not
+      # a Sinatra-style ':token' placeholder, which never matches.)
+      r.get('invites', String)            { |t| Invites[r, token: t].show }
+      r.post('invites', String, 'accept') { |t| Invites[r, token: t].accept }
+
       # Stripe webhook — public but signature-verified (source of truth)
       r.post('stripe/webhook') { StripeBilling[r].webhook }
 
@@ -155,6 +163,13 @@ class App::Routes < Roda
         admin_required!
         r.on('users') { do_crud(Users, r, 'CRUDL') }
         r.on('uploads') { r.post('presign') { Uploads[r].presign } } # presigned S3 URL (or inline fallback)
+
+        # Onboarding invites (members/owners) — admin issues, recipient accepts.
+        r.on 'invites' do
+          r.post(Integer, 'resend') { |id| Invites[r, id: id].resend }
+          r.post(Integer, 'revoke') { |id| Invites[r, id: id].revoke }
+          do_crud(Invites, r, 'CL')
+        end
         r.on 'plots' do
           r.get('summary') { Plots[r].summary }
           r.post('import')  { Plots[r].import_rows }   # bulk upload (Excel/CSV) → upsert by plot_no
