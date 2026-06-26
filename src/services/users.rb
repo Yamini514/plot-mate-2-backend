@@ -45,7 +45,42 @@ class App::Services::Users < App::Services::Base
     u = App.cu.user_obj
     u.full_name = params[:full_name].to_s.strip if params[:full_name].present?
     u.phone_number = params[:phone_number] if params.key?(:phone_number)
-    save(u) { return_success(u.as_pos) }
+    u.avatar_url = params[:avatar_url] if params.key?(:avatar_url)
+    # Structured owner contacts (migration 0063) — arrays of small hashes.
+    u.family_members     = Array(params[:family_members])     if params.key?(:family_members)
+    u.emergency_contacts = Array(params[:emergency_contacts]) if params.key?(:emergency_contacts)
+    u.nominees           = Array(params[:nominees])           if params.key?(:nominees)
+    # Communication / language / privacy preferences live in extras (no migration).
+    if params.key?(:communication_prefs)
+      u.extras = (u.extras || {}).merge('comm_prefs' => params[:communication_prefs])
+    end
+    save(u) do
+      App::Audit.record('profile.update', entity: u, client_id: u.client_id,
+                        summary: "#{u.full_name} updated their profile")
+      return_success(u.as_pos)
+    end
+  end
+
+  # Admin deactivate/reactivate of a venture user (block = active:false + reason).
+  def deactivate
+    return_errors!("You can't deactivate your own account", 422) if item.id == App.cu.id
+    validate!('reason' => App::Validate.text(params[:reason], min: 3, max: 500))
+    item.set(active: false, blocked_at: Time.now, blocked_by: App.cu.id,
+             block_reason: params[:reason], current_session_id: nil)
+    save(item) do |u|
+      App::Audit.record('user.deactivate', entity: u, client_id: u.client_id,
+                        summary: "Deactivated #{u.full_name}", meta: { reason: params[:reason] })
+      return_success(u.as_pos)
+    end
+  end
+
+  def activate
+    item.set(active: true, blocked_at: nil, blocked_by: nil, block_reason: nil)
+    save(item) do |u|
+      App::Audit.record('user.activate', entity: u, client_id: u.client_id,
+                        summary: "Reactivated #{u.full_name}")
+      return_success(u.as_pos)
+    end
   end
 
   def update_password
@@ -53,8 +88,13 @@ class App::Services::Users < App::Services::Base
     unless u.authenticate(params[:current_password])
       return_errors!('Current password is incorrect', 400)
     end
+    validate!('new_password' => App::Validate.password(params[:new_password]))
     u.password = params[:new_password]
-    save(u) { return_success('Password updated successfully') }
+    save(u) do
+      App::Audit.record('password.change', entity: u, client_id: u.client_id,
+                        summary: "#{u.full_name} changed their password")
+      return_success('Password updated successfully')
+    end
   end
 
   # --- password reset via OTP (public) -------------------------------------
@@ -123,6 +163,7 @@ class App::Services::Users < App::Services::Base
     user = model.where(reset_token: token).first
     return_errors!('Invalid or expired token', 400) unless user && user.reset_token_valid?
 
+    validate!('password' => App::Validate.password(new_password))
     user.password = new_password
     user.reset_token = nil
     user.reset_sent_at = nil

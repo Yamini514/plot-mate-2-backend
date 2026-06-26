@@ -13,11 +13,23 @@ class App::Models::ApprovalRequest < Sequel::Model
 
   def open? = OPEN_STATUSES.include?(status)
 
+  # Which role should review a given request type, from the venture's approval
+  # matrix (clients.settings['approval_matrix']); falls back to 'admin'. This is
+  # the configurable routing that replaces the previously hardcoded 'admin'.
+  def self.role_for(client_id, request_type)
+    matrix = (App::Models::Client[client_id]&.settings || {})['approval_matrix'] || {}
+    (matrix[request_type.to_s].presence || 'admin')
+  rescue StandardError
+    'admin'
+  end
+
   # Create a request + its first "submitted" timeline entry. Used by any flow
   # that needs a decision (invite accept, plot claim, transfer, document review).
+  # current_role defaults to the matrix-resolved approver for the request type.
   def self.open!(client_id:, request_type:, subject: nil, subject_type: nil,
                  subject_id: nil, payload: {}, submitted_by: nil,
-                 submitted_by_name: nil, current_role: 'admin')
+                 submitted_by_name: nil, current_role: nil)
+    current_role ||= role_for(client_id, request_type)
     st  = subject_type || (subject && subject.class.name.split('::').last)
     sid = subject_id   || subject&.id
     req = create(client_id: client_id, request_type: request_type, subject_type: st,

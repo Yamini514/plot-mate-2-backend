@@ -68,6 +68,9 @@ class App::Services::Invoices < App::Services::Base
         created += 1
       end
     end
+    App::Audit.record('invoice.generate', entity_type: 'Invoice', client_id: current_client_id,
+                      summary: "Generated #{created} invoice(s) for #{period}",
+                      meta: { plan_id: plan.id, period: period })
     return_success(count: created, period: period)
   end
 
@@ -91,7 +94,11 @@ class App::Services::Invoices < App::Services::Base
       status: 'generated', issued_on: Date.today, due_date: due
     )
     inv.recompute!
-    save(inv) { |i| return_success(i.as_pos) }
+    save(inv) do |i|
+      App::Audit.record('invoice.charge', entity: i, client_id: current_client_id,
+                        summary: "Charged #{plan.name} to #{plot.plot_no} (#{format_currency(i.total_paise)})")
+      return_success(i.as_pos)
+    end
   end
 
   # Bulk workflow transition (send / cancel / generate / mark-paid).
@@ -119,13 +126,65 @@ class App::Services::Invoices < App::Services::Base
   end
 
   # Apply each overdue invoice's plan late-fee rule (idempotent per invoice).
+  # Honours a configurable grace period (Settings → penalty_grace_days): the
+  # penalty only lands once an invoice is overdue by more than the grace window.
   def apply_late_fees
+    grace  = penalty_grace_days
+    cutoff = Date.today - grace
     applied = 0
     scoped.where(status: Invoice::OPEN_STATUSES)
-          .where { due_date < Date.today }.each do |inv|
+          .where { due_date < cutoff }.each do |inv|
       applied += 1 if inv.apply_late_fee!
     end
-    return_success(applied: applied)
+    return_success(applied: applied, grace_days: grace)
+  end
+
+  # Accrue one month of interest on every overdue invoice at the venture's
+  # configured monthly rate (Settings → interest_percent_monthly). Idempotent
+  # per calendar month per invoice (safe to run repeatedly / from the scheduler).
+  def apply_interest
+    rate = interest_rate
+    return_errors!('Set a monthly interest rate in Settings → Fees first', 422) if rate <= 0
+    applied = 0
+    scoped.where(status: Invoice::OPEN_STATUSES).each do |inv|
+      applied += 1 if inv.apply_interest!(rate)
+    end
+    App::Audit.record('invoice.apply_interest', entity_type: 'Invoice', client_id: current_client_id,
+                      summary: "Accrued interest on #{applied} invoice(s)", meta: { rate_percent: rate })
+    return_success(applied: applied, rate_percent: rate)
+  end
+
+  # Owner-wise demand statement: every invoice for one plot, with running
+  # totals — the printable "what you owe" summary.
+  def demand_statement
+    plot = Plot[client_id: current_client_id, id: (qs[:plot_id] || params[:plot_id])] ||
+           return_errors!('Plot not found', 404)
+    invs = scoped.where(plot_id: plot.id).order(Sequel.desc(:issued_on)).all
+    billed      = invs.sum(&:total_paise)
+    paid        = invs.sum { |i| i.paid_paise || 0 }
+    outstanding = invs.reject { |i| i.status == 'cancelled' }.sum { |i| i.balance_paise || 0 }
+    return_success(
+      plot:    { id: plot.id, plot_no: plot.plot_no, owner_name: plot.owner_name,
+                 email: plot.email, phone: plot.phone },
+      invoices: invs.map(&:as_pos),
+      totals:  { billed: billed / 100, paid: paid / 100, outstanding: outstanding / 100 },
+      generated_on: Date.today
+    )
+  end
+
+  # Fund rollup: money collected (credits) grouped by fee category, so corpus,
+  # maintenance, water, etc. funds can be tracked separately.
+  def fund_summary
+    rows = Transaction.where(client_id: current_client_id, direction: 'credit')
+                      .group(:category)
+                      .select(:category, Sequel.function(:sum, :amount_paise).as(:total)).all
+    by_cat = rows.map { |r| { category: r[:category] || 'other', collected: (r[:total] || 0) / 100 } }
+                 .sort_by { |h| -h[:collected] }
+    return_success(
+      by_category:      by_cat,
+      corpus_collected: (by_cat.find { |h| h[:category] == 'corpus' }&.dig(:collected) || 0),
+      total_collected:  by_cat.sum { |h| h[:collected] }
+    )
   end
 
   # Waiver / discount / credit — reduces balance, logged with reason + author.
@@ -143,6 +202,9 @@ class App::Services::Invoices < App::Services::Base
       inv.recompute!
       inv.save_changes
     end
+    App::Audit.record('invoice.adjust', entity: inv, client_id: current_client_id,
+                      summary: "#{kind.capitalize} #{format_currency(amount_paise)} on #{inv.number}",
+                      meta: { kind: kind, reason: params[:reason] })
     return_success(inv.as_pos)
   end
 
@@ -201,6 +263,17 @@ class App::Services::Invoices < App::Services::Base
                    .each_with_object({}) { |row, h| h[row[:status]] = row[:count] }
     counts['all'] = scoped.count
     counts
+  end
+
+  # Grace days before a penalty applies — configurable in Settings (defaults 0).
+  def penalty_grace_days
+    (Client[current_client_id]&.settings || {})['penalty_grace_days'].to_i
+  end
+
+  # Monthly interest rate (%) on overdue balances — configurable in Settings
+  # (defaults 0 = interest off).
+  def interest_rate
+    (Client[current_client_id]&.settings || {})['interest_percent_monthly'].to_f
   end
 
   def next_invoice_number

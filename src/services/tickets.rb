@@ -7,6 +7,9 @@ class App::Services::Tickets < App::Services::Base
     ds = ds.where(category: qs[:category]) if qs[:category].present? && qs[:category] != 'all'
     ds = ds.where(priority: qs[:priority]) if qs[:priority].present? && qs[:priority] != 'all'
     ds = ds.where(created_by_user_id: App.cu.id) if qs[:mine] == 'true'
+    # Vendor portal: only the work orders assigned to this vendor's staff record
+    # (-1 = a never-matching id when the login isn't linked to a vendor yet).
+    ds = ds.where(assignee_staff_id: my_staff_id || -1) if qs[:assigned_to_me] == 'true'
     if qs[:search].present?
       term = "%#{qs[:search]}%"
       ds = ds.where do
@@ -21,7 +24,9 @@ class App::Services::Tickets < App::Services::Base
   end
 
   def get
-    return_success(item.as_pos)
+    enforce_vendor_scope!(item)
+    return_success(item.as_pos.merge(photos: ticket_photos(item),
+                                     materials: item.materials.map(&:as_pos)))
   end
 
   def create
@@ -33,7 +38,10 @@ class App::Services::Tickets < App::Services::Base
     obj.created_by_name ||= "#{App.cu.user_obj.full_name} (#{App.cu.user_obj.role_name.capitalize})"
     obj.created_by_user_id ||= App.cu.id
     obj.due_at = Time.now + (Ticket::SLA_HOURS[obj.priority] || 24) * 3600
-    save(obj) { |t| return_success(t.as_pos) }
+    save(obj) do |t|
+      attach_photos_from_params(t)   # optional photos posted with the request
+      return_success(t.as_pos.merge(photos: ticket_photos(t)))
+    end
   end
 
   def update
@@ -44,6 +52,7 @@ class App::Services::Tickets < App::Services::Base
 
   # Workflow transition (validated by the state machine).
   def transition
+    enforce_vendor_scope!(item)
     to = params[:to].to_s
     unless item.transition!(to)
       return_errors!("Cannot move #{item.code} from '#{item.status}' to '#{to}'", 422)
@@ -51,9 +60,16 @@ class App::Services::Tickets < App::Services::Base
     return_success(item.as_pos)
   end
 
-  # Auto-assign by category, or assign to a named person.
+  # Assign to a specific vendor (assignee_staff_id), a named person, or
+  # auto-assign by category.
   def assign
-    if params[:assignee].present?
+    if params[:assignee_staff_id].present?
+      vendor = App::Models::Staff.where(client_id: current_client_id, id: params[:assignee_staff_id]).first
+      return_errors!('Vendor not found', 404) unless vendor
+      item.set(assignee: vendor.name, assignee_staff_id: vendor.id,
+               status: (item.status == 'created' ? 'assigned' : item.status))
+      save(item) { |t| return_success(t.as_pos) }
+    elsif params[:assignee].present?
       item.assignee = params[:assignee]
       item.status = 'assigned' if item.status == 'created'
       save(item) { |t| return_success(t.as_pos) }
@@ -61,6 +77,81 @@ class App::Services::Tickets < App::Services::Base
       item.auto_assign!
       return_success(item.as_pos)
     end
+  end
+
+  # Vendor accepts the assignment → starts work.
+  def accept
+    enforce_vendor_scope!(item)
+    item.set(accepted_at: Time.now,
+             status: (%w[assigned escalated].include?(item.status) ? 'accepted' : item.status))
+    save(item) { |t| return_success(t.as_pos) }
+  end
+
+  # Vendor declines → kicked back to the queue (unassigned) with a reason.
+  def reject
+    enforce_vendor_scope!(item)
+    item.set(rejected_reason: params[:reason], assignee: nil, assignee_staff_id: nil,
+             accepted_at: nil, status: 'escalated')
+    save(item) do |t|
+      App::Audit.record('ticket.vendor_reject', entity: t, client_id: current_client_id,
+                        summary: "Vendor declined #{t.code}", meta: { reason: params[:reason] })
+      return_success(t.as_pos)
+    end
+  end
+
+  # Attach a before/after/general work photo (URL from the Uploads presign flow
+  # or an inline data URL).
+  def attach_photo
+    enforce_vendor_scope!(item)
+    return_errors!('A photo URL is required', 422) if params[:url].to_s.empty?
+    photo = App::Models::Photo.new(
+      client_id: current_client_id, url: params[:url], caption: params[:caption],
+      kind: (params[:kind].presence || 'general'), category: 'work_order',
+      attachable_type: 'Ticket', attachable_id: item.id, date: Date.today
+    )
+    photo.code ||= "WPH-#{App::Models::Photo.where(client_id: current_client_id).count + 1}"
+    save(photo) { return_success(item.as_pos.merge(photos: ticket_photos(item))) }
+  end
+
+  # Mark the work done with a completion report (+ optional labour cost), then
+  # notify the owner.
+  def complete
+    enforce_vendor_scope!(item)
+    item.completion_note = params[:completion_note]
+    item.labour_cost_paise = (params[:labour_cost].to_f * 100).round if params.key?(:labour_cost)
+    item.set(status: 'resolved', resolved_at: (item.resolved_at || Time.now))
+    save(item) do |t|
+      notify_owner!(t)
+      return_success(t.as_pos.merge(photos: ticket_photos(t), materials: t.materials.map(&:as_pos)))
+    end
+  end
+
+  # --- work-order materials -----------------------------------------------
+  def add_material
+    enforce_vendor_scope!(item)
+    validate!(
+      'item'      => App::Validate.text(params[:item], min: 1, max: 120, label: 'Item'),
+      'quantity'  => App::Validate.number(params[:quantity], positive: true, integer: true, required: false, label: 'Quantity'),
+      'unit_cost' => App::Validate.number(params[:unit_cost], min: 0, required: false, label: 'Unit cost')
+    )
+    App::Models::WorkOrderMaterial.create(
+      ticket_id: item.id, client_id: current_client_id, item: params[:item].to_s.strip,
+      quantity: (params[:quantity] || 1).to_i, unit_cost_paise: (params[:unit_cost].to_f * 100).round,
+      created_by: App.cu.id
+    )
+    recompute_materials!(item)
+    App::Audit.record('workorder.material.add', entity: item, client_id: current_client_id,
+                      summary: "Added material '#{params[:item]}' to #{item.code}")
+    return_success(item.as_pos.merge(materials: item.materials_dataset.all.map(&:as_pos)))
+  end
+
+  def remove_material
+    enforce_vendor_scope!(item)
+    m = App::Models::WorkOrderMaterial[client_id: current_client_id, ticket_id: item.id, id: rp[:material].to_i] ||
+        return_errors!('Material not found', 404)
+    m.destroy
+    recompute_materials!(item)
+    return_success(item.as_pos.merge(materials: item.materials_dataset.all.map(&:as_pos)))
   end
 
   def escalate
@@ -143,6 +234,29 @@ class App::Services::Tickets < App::Services::Base
 
   private
 
+  # Recompute the cached materials total on the ticket from its line items.
+  def recompute_materials!(ticket)
+    total = ticket.materials_dataset.all.sum(&:line_total_paise)
+    ticket.update(materials_cost_paise: total)
+  end
+
+  # The staff record id behind the logged-in vendor's portal login (set when the
+  # admin creates the login). nil for admins / unlinked logins.
+  def my_staff_id
+    App.cu.user_obj.extras&.dig('staff_id')
+  end
+
+  # A vendor may only act on work orders assigned to their own staff record.
+  # No-op for admins (who operate every ticket on the vendor's behalf).
+  def enforce_vendor_scope!(t)
+    u = App.cu.user_obj
+    return unless u&.vendor?
+    sid = my_staff_id
+    unless sid && t.assignee_staff_id.to_s == sid.to_s
+      return_errors!('This work order is not assigned to you', 403)
+    end
+  end
+
   def counts_by_status
     c = scoped.group_and_count(:status).all
               .each_with_object({}) { |r, h| h[r[:status]] = r[:count] }
@@ -152,6 +266,51 @@ class App::Services::Tickets < App::Services::Base
 
   def next_code
     "TKT-#{4811 + scoped.count}"
+  end
+
+  def ticket_photos(t)
+    App::Models::Photo
+      .where(client_id: current_client_id, attachable_type: 'Ticket', attachable_id: t.id)
+      .order(:created_at).all.map(&:as_pos)
+  end
+
+  # Persist any photos posted alongside a create (member helpdesk / admin form).
+  # Accepts an array of { url, kind, caption } (or bare URL strings). Best-effort.
+  def attach_photos_from_params(t)
+    list = params[:photos]
+    return unless list.is_a?(Array)
+    list.first(8).each do |ph|
+      url = ph.is_a?(Hash) ? (ph['url'] || ph[:url]) : ph
+      next if url.to_s.strip.empty?
+      kind = (ph.is_a?(Hash) ? (ph['kind'] || ph[:kind]) : nil).to_s
+      photo = App::Models::Photo.new(
+        client_id: current_client_id, url: url,
+        caption: (ph.is_a?(Hash) ? (ph['caption'] || ph[:caption]) : nil),
+        kind: (kind.empty? ? 'general' : kind), category: 'work_order',
+        attachable_type: 'Ticket', attachable_id: t.id, date: Date.today
+      )
+      photo.code ||= "WPH-#{App::Models::Photo.where(client_id: current_client_id).count + 1}"
+      photo.save
+    end
+  rescue => e
+    App.logger.error("attach_photos_from_params failed: #{e.message}")  # non-fatal
+  end
+
+  # Best-effort: email the ticket's owner when their work order is completed.
+  def notify_owner!(t)
+    return unless t.created_by_user_id
+    owner = User.where(client_id: current_client_id, id: t.created_by_user_id).first
+    return unless owner&.email
+    client = Client[current_client_id]
+    html = App::Mailer.branded_email(
+      client: client, heading: "Your request #{t.code} is resolved",
+      intro: "Hello #{owner.full_name}, work on \"#{t.subject}\" is complete." \
+             "#{t.completion_note ? " Notes: #{t.completion_note}" : ''}",
+      outro: 'Please confirm closure or reopen it from your portal if anything remains.'
+    )
+    App::Mailer.deliver(to: owner.email, subject: "#{t.code} resolved", html_body: html, client: client)
+  rescue => e
+    App.logger.error("notify_owner! failed: #{e.message}")  # non-fatal
   end
 
   def self.fields

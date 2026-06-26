@@ -122,8 +122,14 @@ class App::Services::Onboarding < App::Services::Base
   def seed_layout!(client)
     map = item.onboarding_documents_dataset.where(doc_type: 'layout_map').first
     return unless map && map.url.present?
-    App::Models::PlotLayout.create(client_id: client.id, name: 'Master plan',
-                                   image_url: map.url, active: true)
+    attrs = { client_id: client.id, name: 'Master plan', active: true }
+    # An inline data: URL goes in the text image_data column; a hosted URL in image_url.
+    if map.url.to_s.start_with?('data:')
+      attrs[:image_data] = map.url
+    else
+      attrs[:image_url] = map.url
+    end
+    App::Models::PlotLayout.create(**attrs)
   rescue => e
     App.logger.error("seed_layout! failed: #{e.message}")  # non-fatal
   end

@@ -4,8 +4,11 @@ class App::Services::PlatformUsers < App::Services::Base
   # the venture-user roster by default.
   def model = User
 
+  SORTABLE = { 'name' => :full_name, 'email' => :email, 'role' => :role,
+               'created_at' => :created_at }.freeze
+
   def list
-    ds = User.exclude(role: User::ROLES[:super_admin]).order(Sequel.desc(:created_at))
+    ds = User.exclude(role: User::ROLES[:super_admin])
     if qs[:search].present?
       term = "%#{qs[:search]}%"
       ds = ds.where { Sequel.ilike(:full_name, term) | Sequel.ilike(:email, term) }
@@ -15,11 +18,11 @@ class App::Services::PlatformUsers < App::Services::Base
     ds = ds.where(active: true)  if qs[:status] == 'active'
     ds = ds.where(active: false) if qs[:status] == 'blocked'
 
-    count = ds.count
+    ds    = apply_sort(ds, SORTABLE)
+    total = ds.count
     rows  = ds.offset(offset).limit(limit).all
     names = client_names(rows.map(&:client_id))
-    return_success(rows.map { |u| user_pos(u, names) },
-                   total_pages: (count / page_size.to_f).ceil, counts: counts)
+    return_success(rows.map { |u| user_pos(u, names) }, counts: counts, **pagination_meta(total))
   end
 
   def get = return_success(user_pos(item, client_names([item.client_id])))

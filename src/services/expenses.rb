@@ -21,6 +21,8 @@ class App::Services::Expenses < App::Services::Base
           client_id: e.client_id, direction: 'debit', category: e.category || 'expense',
           amount_paise: e.amount_paise, reference: e.code, note: e.description, occurred_on: e.date
         )
+        App::Audit.record('expense.create', entity: e, client_id: e.client_id,
+                          summary: "Recorded expense #{e.code} (#{format_currency(e.amount_paise)})")
         return_success(e.as_pos)
       end
     end

@@ -8,6 +8,31 @@ class App::Services::PlotMap < App::Services::Base
     return_success(layout: layout&.as_pos, regions: regions.map(&:as_pos))
   end
 
+  # POST /admin/plot-map/detect — read the plot numbers off the uploaded site
+  # plan with AI vision, grouped by phase. Returns a draft the admin reviews and
+  # corrects before any plots are created (detection is best-effort). Counts are
+  # computed here so the UI can show "N plots across M phases" at a glance.
+  def detect_plots
+    layout = active_layout
+    return_errors!('Import a site plan image first.', 400) unless layout
+
+    result = App::Anthropic.detect_plots(image_data: layout.image_data, image_url: layout.image_url)
+
+    # Normalize + de-duplicate within each phase, preserving printed form.
+    phases = Array(result['phases']).filter_map do |grp|
+      name = grp['phase'].to_s.strip
+      name = 'Unphased' if name.empty?
+      nums = Array(grp['numbers']).map { |n| n.to_s.strip }.reject(&:empty?).uniq
+      next if nums.empty?
+      { phase: name, numbers: nums, count: nums.size }
+    end
+
+    return_success(phases: phases, total: phases.sum { |p| p[:count] }, mock: App::Anthropic.mock_enabled?)
+  rescue => e
+    App.logger.error("plot detect failed: #{e.class}: #{e.message}")
+    return_errors!(e.message, 422)
+  end
+
   # PUT /admin/plot-map/layout — import (or replace) the site plan image.
   # Body: { name, image_data }  (image_data is a data URL until S3 is configured)
   def save_layout

@@ -16,10 +16,18 @@ class App::Services::Complaints < App::Services::Base
   end
 
   def get
-    return_success(item.as_pos)
+    caller_can_act!   # admins: any complaint in their venture; members: only their own
+    data = item.as_pos(with_events: true)
+    # Members never see internal notes — only resident-visible timeline entries.
+    data[:events] = data[:events].reject { |e| e[:internal] } unless App.cu.user_obj&.admin?
+    return_success(data)
   end
 
   def create
+    validate!(
+      'title'    => App::Validate.text(params[:title], min: 3, max: 160),
+      'priority' => App::Validate.text(params[:priority], required: false, max: 20)
+    )
     obj = model.new(data_for(:save))
     obj.client_id = current_client_id
     obj.code ||= next_code
@@ -27,27 +35,125 @@ class App::Services::Complaints < App::Services::Base
     obj.raised_by ||= App.cu.user_obj.full_name
     obj.raised_by_user_id ||= App.cu.id
     obj.plot_no ||= App.cu.user_obj.extras&.dig('plot_no')
-    save(obj) { |c| return_success(c.as_pos) }
+    # Optional photos/videos attached at raise time (jsonb [{name,url}]).
+    obj.attachments = Array(params[:attachments]) if params.key?(:attachments)
+    save(obj) do |c|
+      App::Audit.record('complaint.create', entity: c, client_id: c.client_id,
+                        summary: "Raised complaint #{c.code} — #{c.title}")
+      return_success(c.as_pos(with_events: true))
+    end
   end
 
   def update
     data = data_for(:save)
     item.set_fields(data, data.keys)
-    save(item) { |c| return_success(c.as_pos) }
+    save(item) { |c| return_success(c.as_pos(with_events: true)) }
   end
 
   def assign
-    item.assigned_to    = params[:assigned_to].presence || 'Maintenance Team'
+    name = params[:assigned_to].presence || 'Maintenance Team'
+    item.assigned_to    = name
     item.assigned_phone = params[:assigned_phone] if params.key?(:assigned_phone)
     item.assigned_email = params[:assigned_email] if params.key?(:assigned_email)
     item.assigned_to_user_id = params[:assigned_to_user_id] if params.key?(:assigned_to_user_id)
     item.status = 'in_progress' if item.status == 'open'
-    save(item) { |c| return_success(c.as_pos) }
+    save(item) do |c|
+      log_event(c, kind: 'assignment', internal: true, body: "Assigned to #{name}")
+      App::Audit.record('complaint.assign', entity: c, client_id: c.client_id,
+                        summary: "Assigned #{c.code} to #{name}")
+      return_success(c.as_pos(with_events: true))
+    end
   end
 
   def resolve
-    item.status = 'resolved'
-    save(item) { |c| return_success(c.as_pos) }
+    from = item.status
+    item.set(status: 'resolved', resolved_at: Time.now)
+    save(item) do |c|
+      log_event(c, kind: 'status', internal: false, body: 'Marked resolved', meta: { from: from, to: 'resolved' })
+      App::Audit.record('complaint.resolve', entity: c, client_id: c.client_id,
+                        summary: "Resolved #{c.code}", meta: { from: from })
+      App::Notify.create(user_id: c.raised_by_user_id, client_id: c.client_id, kind: 'complaint',
+                         title: 'Complaint resolved',
+                         body: "#{c.code} — #{c.title} was marked resolved. Please confirm or reopen.",
+                         link: '/member/complaints', entity: c)
+      return_success(c.as_pos(with_events: true))
+    end
+  end
+
+  # Raise the escalation ladder l1 → l2 → l3 (caps at l3). Independent of status.
+  def escalate
+    return_errors!('Already at the highest escalation level', 422) if item.escalation_level == 'l3'
+    next_level = Complaint::NEXT_ESCALATION[item.escalation_level]
+    item.set(escalation_level: next_level, escalated_at: Time.now)
+    save(item) do |c|
+      log_event(c, kind: 'escalation', internal: true,
+                body: "Escalated to #{next_level}", meta: { reason: params[:reason] })
+      App::Audit.record('complaint.escalate', entity: c, client_id: c.client_id,
+                        summary: "Escalated #{c.code} to #{next_level}", meta: { reason: params[:reason] })
+      return_success(c.as_pos(with_events: true))
+    end
+  end
+
+  # Reopen a resolved/closed complaint (admin or the original raiser).
+  def reopen
+    caller_can_act!
+    return_errors!('Only a resolved or closed complaint can be reopened', 422) unless %w[resolved closed].include?(item.status)
+    validate!('reason' => App::Validate.text(params[:reason], min: 3, max: 500))
+    from = item.status
+    item.set(status: 'in_progress', resolved_at: nil, closed_at: nil,
+             resident_confirmed: false, resident_confirmed_at: nil,
+             reopen_count: (item.reopen_count || 0) + 1)
+    save(item) do |c|
+      log_event(c, kind: 'reopen', internal: false,
+                body: params[:reason], meta: { from: from, to: 'in_progress' })
+      App::Audit.record('complaint.reopen', entity: c, client_id: c.client_id,
+                        summary: "Reopened #{c.code}", meta: { from: from, reason: params[:reason] })
+      return_success(c.as_pos(with_events: true))
+    end
+  end
+
+  # Resident confirms the resolution → close the complaint.
+  def confirm_resolution
+    caller_can_act!
+    return_errors!('Only a resolved complaint can be confirmed', 422) unless item.status == 'resolved'
+    item.set(status: 'closed', closed_at: Time.now,
+             resident_confirmed: true, resident_confirmed_at: Time.now)
+    save(item) do |c|
+      log_event(c, kind: 'confirmation', internal: false, body: 'Resident confirmed the resolution')
+      App::Audit.record('complaint.confirm', entity: c, client_id: c.client_id,
+                        summary: "Resident confirmed resolution of #{c.code}")
+      return_success(c.as_pos(with_events: true))
+    end
+  end
+
+  # Add an internal note (default) or a resident-visible update to the timeline.
+  def add_note
+    validate!('body' => App::Validate.text(params[:body], min: 1, max: 2000, label: 'Note'))
+    internal = params.key?(:internal) ? !!params[:internal] : true
+    log_event(item, kind: 'note', internal: internal, body: params[:body].to_s.strip)
+    App::Audit.record('complaint.note', entity: item, client_id: item.client_id,
+                      summary: "Note on #{item.code}", meta: { internal: internal })
+    return_success(item.as_pos(with_events: true))
+  end
+
+  # Attach a file (already uploaded via /admin/uploads/presign) to the complaint.
+  def attach
+    name = params[:name].to_s
+    url  = params[:url].to_s
+    validate!(
+      'name' => App::Validate.presence(name, label: 'File name'),
+      'url'  => App::Validate.presence(url, label: 'File'),
+      'file' => App::Validate.file(name: name, size: params[:size])
+    )
+    list = (item.attachments || []) + [{ 'name' => name, 'url' => url,
+                                         'key' => params[:key], 'size' => params[:size] }]
+    item.set(attachments: list)
+    save(item) do |c|
+      log_event(c, kind: 'attachment', internal: true, body: "Attached #{name}")
+      App::Audit.record('complaint.attach', entity: c, client_id: c.client_id,
+                        summary: "Attached #{name} to #{c.code}")
+      return_success(c.as_pos(with_events: true))
+    end
   end
 
   def summary
@@ -66,6 +172,28 @@ class App::Services::Complaints < App::Services::Base
   end
 
   private
+
+  # Append a timeline entry, stamped with the acting user.
+  def log_event(complaint, kind:, body:, internal: true, meta: {})
+    u = App.cu.user_obj
+    App::Models::ComplaintEvent.create(
+      complaint_id: complaint.id, client_id: complaint.client_id,
+      kind: kind, body: body, internal: internal,
+      actor_name: u&.full_name, actor_id: u&.id, meta: meta || {}
+    )
+  rescue => e
+    App.logger.error("complaint event log failed: #{e.message}")
+    nil
+  end
+
+  # Member-facing actions (reopen/confirm) are limited to the original raiser;
+  # admins may act on any complaint in their venture.
+  def caller_can_act!
+    u = App.cu.user_obj
+    return if u&.admin?
+    return if item.raised_by_user_id == App.cu.id
+    return_errors!('Not allowed for this complaint', 403)
+  end
 
   def counts_by_status
     c = scoped.group_and_count(:status).all

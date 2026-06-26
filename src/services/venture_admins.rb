@@ -3,17 +3,21 @@ class App::Services::VentureAdmins < App::Services::Base
   # tenant-scoped — queries User directly.
   def model = User
 
+  SORTABLE = { 'name' => :full_name, 'email' => :email, 'created_at' => :created_at }.freeze
+
   def list
-    ds = User.where(role: User::ROLES[:admin]).order(Sequel.desc(:created_at))
+    ds = User.where(role: User::ROLES[:admin])
     if qs[:search].present?
       term = "%#{qs[:search]}%"
       ds = ds.where { Sequel.ilike(:full_name, term) | Sequel.ilike(:email, term) }
     end
     ds = ds.where(active: true)  if qs[:status] == 'active'
     ds = ds.where(active: false) if qs[:status] == 'inactive'
-    admins = ds.all
+    ds     = apply_sort(ds, SORTABLE)
+    total  = ds.count
+    admins = ds.offset(offset).limit(limit).all
     names  = client_names(admins.map(&:client_id))
-    return_success(admins.map { |u| admin_pos(u, names) }, counts: counts)
+    return_success(admins.map { |u| admin_pos(u, names) }, counts: counts, **pagination_meta(total))
   end
 
   def get = return_success(admin_pos(item, client_names([item.client_id])))

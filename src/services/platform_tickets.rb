@@ -4,8 +4,11 @@ class App::Services::PlatformTickets < App::Services::Base
   # venture app; here the super admin triages, assigns, replies and escalates.
   def model = PlatformTicket
 
+  SORTABLE = { 'code' => :code, 'subject' => :subject, 'priority' => :priority,
+               'status' => :status, 'created_at' => :created_at }.freeze
+
   def list
-    ds = PlatformTicket.order(Sequel.desc(:created_at))
+    ds = PlatformTicket.dataset
     ds = ds.where(status: qs[:status])     if qs[:status].present? && qs[:status] != 'all'
     ds = ds.where(priority: qs[:priority]) if qs[:priority].present?
     ds = ds.where(client_id: qs[:client_id].to_i) if qs[:client_id].present?
@@ -13,10 +16,12 @@ class App::Services::PlatformTickets < App::Services::Base
       term = "%#{qs[:search]}%"
       ds = ds.where { Sequel.ilike(:subject, term) | Sequel.ilike(:code, term) }
     end
-    tickets = ds.all
+    ds      = apply_sort(ds, SORTABLE)
+    total   = ds.count
+    tickets = ds.offset(offset).limit(limit).all
     names   = Client.where(id: tickets.map(&:client_id).compact.uniq).select_hash(:id, :name)
     return_success(tickets.map { |t| t.as_pos.merge(venture: names[t.client_id]) },
-                   counts: counts_by_status)
+                   counts: counts_by_status, **pagination_meta(total))
   end
 
   def get

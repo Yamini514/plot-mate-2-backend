@@ -98,7 +98,7 @@ class App::Services::Invites < App::Services::Base
         client_id: inv.client_id, request_type: 'owner_verification',
         subject_type: 'User', subject_id: user.id,
         payload: { 'user_id' => user.id, 'plot_id' => inv.plot_id },
-        submitted_by: user.id, submitted_by_name: user.full_name, current_role: 'admin'
+        submitted_by: user.id, submitted_by_name: user.full_name
       )
       true
     end

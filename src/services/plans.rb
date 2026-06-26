@@ -13,12 +13,20 @@ class App::Services::Plans < App::Services::Base
   def create
     obj = model.new(coerced_data)
     obj.client_id = current_client_id
-    save(obj) { |p| return_success(p.as_pos) }
+    save(obj) do |p|
+      App::Audit.record('charge_head.create', entity: p, client_id: current_client_id,
+                        summary: "Created charge head #{p.name}")
+      return_success(p.as_pos)
+    end
   end
 
   def update
     item.set_fields(coerced_data, coerced_data.keys)
-    save(item) { |p| return_success(p.as_pos) }
+    save(item) do |p|
+      App::Audit.record('charge_head.update', entity: p, client_id: current_client_id,
+                        summary: "Updated charge head #{p.name}")
+      return_success(p.as_pos)
+    end
   end
 
   def item(id = rp[:id])

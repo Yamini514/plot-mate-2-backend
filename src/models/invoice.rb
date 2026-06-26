@@ -13,7 +13,8 @@ class App::Models::Invoice < Sequel::Model
   end
 
   def total_paise
-    (amount_paise || 0) + (late_fee_paise || 0) + (tax_paise || 0) - (discount_paise || 0)
+    (amount_paise || 0) + (late_fee_paise || 0) + (interest_paise || 0) +
+      (tax_paise || 0) - (discount_paise || 0)
   end
 
   # Recompute balance + status from the money fields. Called after any change
@@ -54,6 +55,26 @@ class App::Models::Invoice < Sequel::Model
     true
   end
 
+  # Accrue one month of simple interest on the outstanding balance for an
+  # overdue invoice. Idempotent per calendar month via interest_accrued_on, so
+  # running it repeatedly (admin action or scheduler) adds at most one charge
+  # per month. `rate_percent` is the monthly rate from venture settings.
+  def apply_interest!(rate_percent)
+    return false if rate_percent.to_f <= 0
+    return false if status == 'cancelled' || balance_paise.to_i <= 0
+    return false unless due_date && due_date < Date.today
+    this_month = Date.today.strftime('%Y-%m')
+    return false if interest_accrued_on && interest_accrued_on.strftime('%Y-%m') == this_month
+
+    charge = (balance_paise * rate_percent.to_f / 100).round
+    return false if charge <= 0
+    self.interest_paise = (interest_paise || 0) + charge
+    self.interest_accrued_on = Date.today
+    recompute!
+    save_changes
+    true
+  end
+
   def as_pos
     {
       id: id,
@@ -66,6 +87,7 @@ class App::Models::Invoice < Sequel::Model
       period: period,
       amount: (amount_paise || 0) / 100,
       late_fee: (late_fee_paise || 0) / 100,
+      interest: (interest_paise || 0) / 100,
       tax: (tax_paise || 0) / 100,
       discount: (discount_paise || 0) / 100,
       paid: (paid_paise || 0) / 100,

@@ -68,6 +68,14 @@ class App::Services::Base
     return_errors!(e.message, 400)
   end
 
+  # Run a {field => message_or_nil} map built from App::Validate; halt 422 with
+  # the field-keyed errors when any fail. The single server-side gate behind the
+  # client-side checks in lib/validate.js.
+  def validate!(checks)
+    errors = App::Validate.collect(checks)
+    return_errors!(errors, 422) if errors.any?
+  end
+
   def check_presence!(*flds)
     empty = flds.select do |f|
       params&.dig(*f).blank?
@@ -174,6 +182,22 @@ class App::Services::Base
     [(qs[:page_size] || 20).to_i, 300].min
   end
 
+  # Allow-listed sort. `sortable` maps client sort keys → Sequel columns; reads
+  # qs[:sort] + qs[:dir] (asc|desc), falling back to `default` when the key isn't
+  # allow-listed — so a client can never order by an arbitrary (unindexed) column.
+  def apply_sort(ds, sortable, default = Sequel.desc(:created_at))
+    col = sortable[qs[:sort].to_s]
+    return ds.order(default) unless col
+    ds.order(qs[:dir].to_s == 'asc' ? Sequel.asc(col) : Sequel.desc(col))
+  end
+
+  # Consistent pagination envelope merged into list responses (camelizes to
+  # total / page / pageSize / totalPages on the client).
+  def pagination_meta(total)
+    { total: total, page: [(qs[:page] || 1).to_i, 1].max,
+      page_size: page_size, total_pages: [(total / page_size.to_f).ceil, 1].max }
+  end
+
   def current_client_id
     App.cu.user_obj.client_id
   end
@@ -200,6 +224,22 @@ class App::Services::Base
     # Insert commas for thousands separators
     integer_with_commas = integer_part.reverse.scan(/\d{1,3}/).join(',').reverse
     "$#{integer_with_commas}.#{fractional_part}"
+  end
+
+  # --- S3 helpers (shared by Uploads / Documents) --------------------------
+  # True only when all three AWS settings are present, so callers can fall back
+  # gracefully when storage isn't wired.
+  def s3_configured?
+    %w[AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_S3_BUCKET].none? { |k| ENV[k].to_s.empty? }
+  end
+
+  def s3_client
+    require 'aws-sdk-s3'
+    @s3_client ||= Aws::S3::Client.new(
+      region: ENV['AWS_REGION'] || 'us-east-1',
+      access_key_id: ENV['AWS_ACCESS_KEY_ID'],
+      secret_access_key: ENV['AWS_SECRET_ACCESS_KEY']
+    )
   end
 
   private
