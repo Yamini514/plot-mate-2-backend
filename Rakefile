@@ -246,6 +246,27 @@ namespace :db do
 end
 
 
+namespace :scheduler do
+  # Background dispatcher. There is no long-running job process, so wire this to
+  # an external cron (Render Cron Job, Windows Task Scheduler, or unix cron) —
+  # e.g. hourly. It sends due dues reminders, document-expiry digests, and
+  # preventive-maintenance nudges. Idempotent: each item is dispatched once
+  # (migration 0056 stamps), so running it more often just catches new work.
+  desc "Dispatch due reminders / expiry / maintenance nudges (run on a cron)"
+  task :run do
+    require 'bundler'
+    Bundler.require(:default, App.env)
+    App.load!
+
+    summary = App::Scheduler.run!
+    puts "Scheduler run complete:"
+    puts "  billing reminders : #{summary[:reminders]}"
+    puts "  document expiry   : #{summary[:documents]}"
+    puts "  maintenance due   : #{summary[:maintenance]}"
+  end
+end
+
+
 require 'optparse'
 
 

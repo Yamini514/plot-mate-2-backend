@@ -5,6 +5,8 @@ class App::Models::Photo < Sequel::Model
   end
 
   def as_pos
-    { id: id, code: code, url: url, caption: caption, category: category, date: date }
+    { id: id, code: code, url: url, caption: caption, category: category, date: date,
+      attachable_type: attachable_type, attachable_id: attachable_id,
+      kind: kind || 'general' }
   end
 end

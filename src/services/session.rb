@@ -10,6 +10,11 @@ class App::Services::Session < App::Services::Base
     user.current_session_id = CurrentUser.encoded_token(user)
     user.save_changes
 
+    # Login activity in the audit trail. Pass the actor explicitly — this request
+    # isn't token-authenticated yet, so App::Audit can't infer the current user.
+    App::Audit.record('user.login', entity: user, client_id: user.client_id,
+                      summary: "#{user.full_name} signed in (#{user.role_name})", actor: user)
+
     # Guards clock in for a shift the moment they sign in — this is the source
     # of the login/logout timings the admin sees and the early-clock-out check.
     open_shift!(user) if user.guard?

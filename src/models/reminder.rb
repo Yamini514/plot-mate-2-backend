@@ -1,6 +1,7 @@
 class App::Models::Reminder < Sequel::Model
   CHANNELS = %w[whatsapp sms email].freeze
-  STATUSES = %w[scheduled sent responded].freeze
+  # 'cancelled' is set automatically when the owner clears their dues.
+  STATUSES = %w[scheduled sent responded cancelled].freeze
 
   def validate
     super
@@ -11,6 +12,6 @@ class App::Models::Reminder < Sequel::Model
   def as_pos
     { id: id, code: code, plot_no: plot_no, owner_name: owner_name,
       amount: (amount_paise || 0) / 100, channel: channel,
-      scheduled_for: scheduled_for, status: status }
+      scheduled_for: scheduled_for, sent_at: sent_at, status: status }
   end
 end

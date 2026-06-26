@@ -8,7 +8,7 @@ module App
     end
 
     def logger
-      @logger ||= Logger.new(STDOUT)
+      @logger ||= Logger.new(STDOUT).tap { |l| l.level = Logger::INFO }
     end
 
     def env
@@ -82,6 +82,9 @@ module App
         after_connect: Proc.new { logger.info("Database connection established") }
       )
       @db.extension(:connection_validator)
+      # Log SQL only at DEBUG so the per-query dump doesn't flood STDOUT; the
+      # logger stays at INFO (set below), so request lines and errors still show.
+      @db.sql_log_level = :debug
       # Neon's pooler closes idle connections aggressively, so validate on every
       # checkout (a cheap SELECT 1). A long timeout lets stale connections through
       # and surfaces as "SSL connection has been closed unexpectedly".
@@ -92,7 +95,7 @@ module App
       # Use environment variables instead of hardcoded credentials
       aws_access_key = ENV['AWS_ACCESS_KEY_ID']
       aws_secret_key = ENV['AWS_SECRET_ACCESS_KEY']
-      aws_region = ENV['AWS_REGION'] || 'ap-south-1'
+      aws_region = ENV['AWS_REGION'] || 'us-east-1'
       
       Aws.config.update(
         region: aws_region,

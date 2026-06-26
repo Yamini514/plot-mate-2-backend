@@ -2,7 +2,7 @@ class App::Models::Plot < Sequel::Model
   PAYMENT_STATUSES = %w[paid pending unknown].freeze
   MEMBERSHIPS      = %w[verified unverified].freeze
   # Lifecycle of the plot itself (set by the admin), distinct from payment_status.
-  STATUSES         = %w[available booked sold blocked].freeze
+  STATUSES         = %w[available reserved booked sold blocked].freeze
   PHONE_RE         = /\A\d{10}\z/ # optional, but 10 digits when present
 
   def validate
@@ -40,6 +40,8 @@ class App::Models::Plot < Sequel::Model
       phase: phase,
       membership: membership,
       status: status,
+      reserved_until: (respond_to?(:reserved_until) ? reserved_until : nil),
+      reserved_for: (respond_to?(:reserved_for) ? reserved_for : nil),
       payment_status: payment_status,
       amount_due: amount_due_rupees,
       last_payment_date: last_payment_date,

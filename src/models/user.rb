@@ -1,7 +1,10 @@
 class App::Models::User < Sequel::Model
   # Canonical role enum. Roles 0–2 are venture-scoped personas; super_admin (3)
-  # is a platform-layer role that sits above all ventures (no client_id).
-  ROLES = { member: 0, guard: 1, admin: 2, super_admin: 3 }.freeze
+  # is a platform-layer role that sits above all ventures (no client_id). vendor
+  # (4) is venture-scoped too — a service partner who logs into the vendor portal
+  # to work the orders assigned to their staff record. Appended (never renumber
+  # 0–2: existing rows store the integer).
+  ROLES = { member: 0, guard: 1, admin: 2, super_admin: 3, vendor: 4 }.freeze
   RESET_TOKEN_EXPIRY = 2 * 60 * 60 # 2 hours
   RESET_OTP_EXPIRY   = 10 * 60     # 10 minutes
   MAX_OTP_ATTEMPTS   = 5           # wrong guesses before the code is burned
@@ -10,6 +13,7 @@ class App::Models::User < Sequel::Model
   def guard?       = role == ROLES[:guard]
   def admin?       = role == ROLES[:admin]
   def super_admin? = role == ROLES[:super_admin]
+  def vendor?      = role == ROLES[:vendor]
 
   def role_name
     ROLES.key(role)&.to_s || 'unknown'
@@ -182,6 +186,16 @@ class App::Models::User < Sequel::Model
       agency: extras&.dig('agency'),
       supervisor_name: extras&.dig('supervisor_name'),
       supervisor_phone: extras&.dig('supervisor_phone'),
+      # KYC / verification (owners) — see migration 0046.
+      kyc_status: respond_to?(:kyc_status) ? (kyc_status || 'not_submitted') : 'not_submitted',
+      kyc_data: respond_to?(:kyc_data) ? (kyc_data || {}) : {},
+      verified_at: respond_to?(:verified_at) ? verified_at : nil,
+      # Structured owner contacts (migration 0063).
+      family_members: respond_to?(:family_members) ? (family_members || []) : [],
+      emergency_contacts: respond_to?(:emergency_contacts) ? (emergency_contacts || []) : [],
+      nominees: respond_to?(:nominees) ? (nominees || []) : [],
+      communication_prefs: extras&.dig('comm_prefs') || {},
+      block_reason: respond_to?(:block_reason) ? block_reason : nil,
       last_logged_in_at: last_logged_in_at,
       created_at: created_at
     }

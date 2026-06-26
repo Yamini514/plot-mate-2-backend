@@ -11,7 +11,7 @@ class App::Services::Uploads < App::Services::Base
     return_errors!('Only image uploads are allowed', 400) unless content_type.start_with?('image/')
 
     ext    = content_type.split('/').last.gsub(/[^a-z0-9]/i, '')
-    key    = "uploads/#{current_client_id}/#{SecureRandom.uuid}.#{ext}"
+    key    = "images/#{current_client_id}/#{SecureRandom.uuid}.#{ext}"
     bucket = ENV['AWS_S3_BUCKET']
 
     require 'aws-sdk-s3'
@@ -23,7 +23,7 @@ class App::Services::Uploads < App::Services::Base
 
     public_base = ENV['AWS_S3_PUBLIC_BASE'].to_s
     public_url  = public_base.empty? ?
-      "https://#{bucket}.s3.#{ENV['AWS_REGION'] || 'ap-south-1'}.amazonaws.com/#{key}" :
+      "https://#{bucket}.s3.#{ENV['AWS_REGION'] || 'us-east-1'}.amazonaws.com/#{key}" :
       "#{public_base.chomp('/')}/#{key}"
 
     return_success(configured: true, upload_url: upload_url, public_url: public_url, key: key)
@@ -33,18 +33,22 @@ class App::Services::Uploads < App::Services::Base
     return_success(configured: false)
   end
 
-  private
+  # Prefixes the proxy is allowed to sign for — the only things we ever upload.
+  # Keeps this from being turned into a signer for arbitrary bucket objects.
+  VIEW_PREFIXES = %w[images/ document/].freeze
 
-  def s3_configured?
-    %w[AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_S3_BUCKET].none? { |k| ENV[k].to_s.empty? }
-  end
+  # Short-lived presigned GET for a private object, so the browser can load it
+  # via an <img> tag or open it in a new tab (neither can carry an auth header).
+  # Returns the URL string; the route 302s to it.
+  def presigned_view_url
+    return_errors!('S3 not configured', 503) unless s3_configured?
 
-  def s3_client
+    key = qs[:key].to_s
+    allowed = VIEW_PREFIXES.any? { |p| key.start_with?(p) } && !key.include?('..')
+    return_errors!('Not found', 404) unless allowed
+
     require 'aws-sdk-s3'
-    Aws::S3::Client.new(
-      region: ENV['AWS_REGION'] || 'ap-south-1',
-      access_key_id: ENV['AWS_ACCESS_KEY_ID'],
-      secret_access_key: ENV['AWS_SECRET_ACCESS_KEY']
-    )
+    signer = Aws::S3::Presigner.new(client: s3_client)
+    signer.presigned_url(:get_object, bucket: ENV['AWS_S3_BUCKET'], key: key, expires_in: 3600)
   end
 end

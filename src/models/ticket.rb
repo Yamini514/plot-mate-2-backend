@@ -1,4 +1,6 @@
 class App::Models::Ticket < Sequel::Model
+  one_to_many :materials, class: 'App::Models::WorkOrderMaterial', key: :ticket_id, order: :created_at
+
   CATEGORIES = %w[maintenance security electrical plumbing cleaning amenities
                   parking documentation billing community other].freeze
   PRIORITIES = %w[low medium high critical].freeze
@@ -87,7 +89,14 @@ class App::Models::Ticket < Sequel::Model
       category: category, priority: priority, status: status, location: location,
       created_by: created_by_name, assignee: assignee, created: created_at,
       due_at: due_at, sla_remaining: sla_remaining, sla_state: sla_state,
-      reopen_count: reopen_count || 0, rating: rating
+      reopen_count: reopen_count || 0, rating: rating,
+      # work-order fields (migration 0050)
+      assignee_staff_id: assignee_staff_id, completion_note: completion_note,
+      accepted_at: accepted_at, rejected_reason: rejected_reason,
+      # work-order costs (migration 0064)
+      labour_cost: (labour_cost_paise || 0) / 100,
+      materials_cost: (materials_cost_paise || 0) / 100,
+      total_cost: ((labour_cost_paise || 0) + (materials_cost_paise || 0)) / 100
     }
   end
 end

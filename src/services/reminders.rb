@@ -21,6 +21,34 @@ class App::Services::Reminders < App::Services::Base
     end
   end
 
+  # Auto-schedule: create one scheduled reminder per plot that still has an open
+  # balance (skipping plots that already have a pending reminder). The bulk
+  # "remind all defaulters" action.
+  def generate
+    channel  = params[:channel].presence || 'whatsapp'
+    when_for = parse_date(params[:scheduled_for]) || Date.today
+
+    balances = Hash.new(0)
+    Invoice.where(client_id: current_client_id, status: Invoice::OPEN_STATUSES).each do |inv|
+      balances[inv.plot_id] += (inv.balance_paise || 0) if inv.plot_id
+    end
+
+    created = 0
+    balances.each do |plot_id, bal|
+      next if bal <= 0
+      next if Reminder.where(client_id: current_client_id, plot_id: plot_id, status: 'scheduled').count.positive?
+      plot = Plot[client_id: current_client_id, id: plot_id]
+      next unless plot
+      Reminder.create(
+        client_id: current_client_id, code: "RM-#{scoped.count + 1 + created}",
+        plot_id: plot_id, plot_no: plot.plot_no, owner_name: plot.owner_name,
+        amount_paise: bal, channel: channel, scheduled_for: when_for, status: 'scheduled'
+      )
+      created += 1
+    end
+    return_success(created: created, channel: channel)
+  end
+
   # Mark a reminder dispatched and (for email) actually send it.
   def send_now
     item.status = 'sent'
@@ -37,6 +65,12 @@ class App::Services::Reminders < App::Services::Base
   end
 
   private
+
+  def parse_date(val)
+    val.present? ? Date.parse(val.to_s) : nil
+  rescue ArgumentError
+    nil
+  end
 
   # Send the reminder over its channel. Email goes to the owner's inbox via the
   # association's SMTP; WhatsApp uses the Cloud API template (Settings →

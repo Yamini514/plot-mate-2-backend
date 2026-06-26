@@ -1,4 +1,22 @@
 class App::Services::Settings < App::Services::Base
+  # Per-venture configurable lists — categories, priorities, SLA, channels — so
+  # nothing is hardcoded. Stored under settings['lists'], deep-merged over these
+  # defaults, and surfaced to both admin and member apps via public_settings.
+  DEFAULT_LISTS = {
+    'complaint_categories' => %w[Electricity Water Roads Drainage Security Cleaning Other],
+    'complaint_priorities' => %w[low medium high critical],
+    'document_categories'  => ['Legal', 'Financial', 'Meeting Minutes', 'Layout', 'Maintenance', 'Other'],
+    'ticket_categories'    => %w[maintenance security electrical plumbing cleaning amenities parking documentation billing community other],
+    'ticket_sla_hours'     => { 'low' => 72, 'medium' => 24, 'high' => 8, 'critical' => 1 },
+    'announcement_channels' => %w[in_app email whatsapp]
+  }.freeze
+
+  # Effective lists for a venture (stored over defaults). Callers needing a
+  # configurable enum read this rather than a hardcoded constant.
+  def self.lists_for(client)
+    DEFAULT_LISTS.merge((client&.settings || {})['lists'] || {})
+  end
+
   # Association config stored on the client (rate, bank, committee, SMTP, etc.).
   # A platform-level super admin has no client, so return empty config rather
   # than erroring — the shell then falls back to neutral defaults.
@@ -80,7 +98,7 @@ class App::Services::Settings < App::Services::Base
         s = s.reject { |k, _| k.to_s == 'whatsapp' }
       end
     end
-    s.merge(name: c.name, email: c.email)
+    s.merge(name: c.name, email: c.email, 'lists' => self.class.lists_for(c))
   end
 
   # Preserve the stored SMTP password when the incoming payload leaves it blank
