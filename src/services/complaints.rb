@@ -61,6 +61,11 @@ class App::Services::Complaints < App::Services::Base
       log_event(c, kind: 'assignment', internal: true, body: "Assigned to #{name}")
       App::Audit.record('complaint.assign', entity: c, client_id: c.client_id,
                         summary: "Assigned #{c.code} to #{name}")
+      if c.assigned_to_user_id
+        App::Notify.create(user_id: c.assigned_to_user_id, client_id: c.client_id, kind: 'complaint',
+                           title: 'Complaint assigned to you',
+                           body: "#{c.code} — #{c.title}", link: '/vendor/complaints')
+      end
       return_success(c.as_pos(with_events: true))
     end
   end
@@ -156,6 +161,38 @@ class App::Services::Complaints < App::Services::Base
     end
   end
 
+  # --- vendor execution: complaints assigned to the calling vendor -----------
+  def vendor_list
+    ds = scoped.where(assigned_to_user_id: App.cu.id).order(Sequel.desc(:created_at))
+    ds = ds.where(status: qs[:status]) if qs[:status].present? && qs[:status] != 'all'
+    return_success(ds.all.map(&:as_pos))
+  end
+
+  def vendor_get
+    vendor_owns!
+    data = item.as_pos(with_events: true)
+    data[:events] = data[:events].reject { |e| e[:internal] } # vendor sees the public progress trail
+    return_success(data)
+  end
+
+  # Vendor posts a progress update (resident-visible) on an assigned complaint.
+  def vendor_note
+    vendor_owns!
+    params[:internal] = false
+    add_note
+  end
+
+  def vendor_attach
+    vendor_owns!
+    attach
+  end
+
+  # Vendor marks the work resolved → the owner then confirms (OP-5).
+  def vendor_resolve
+    vendor_owns!
+    resolve
+  end
+
   def summary
     ds = scoped
     return_success(
@@ -184,6 +221,12 @@ class App::Services::Complaints < App::Services::Base
   rescue => e
     App.logger.error("complaint event log failed: #{e.message}")
     nil
+  end
+
+  # Vendor actions are limited to complaints assigned to that vendor.
+  def vendor_owns!
+    return if item.assigned_to_user_id == App.cu.id
+    return_errors!('This complaint is not assigned to you', 403)
   end
 
   # Member-facing actions (reopen/confirm) are limited to the original raiser;

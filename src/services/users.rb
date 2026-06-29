@@ -38,6 +38,111 @@ class App::Services::Users < App::Services::Base
     return_success(App.cu.user_obj.as_pos)
   end
 
+  # --- committee / staff management (RBAC) -----------------------------------
+  # Every venture admin-role user (owner-admin + committee/staff), with their
+  # assigned role name. The owner-admin (role_id nil) is flagged unrestricted.
+  def committee_list
+    rows = scoped.where(role: User::ROLES[:admin]).order(Sequel.desc(:created_at)).all
+    role_names = App::Models::Role.where(client_id: current_client_id)
+                                  .select_hash(:id, :name)
+    return_success(rows.map { |u|
+      u.as_pos.merge(role_name_label: u.role_id ? role_names[u.role_id] : 'Venture Admin (full access)',
+                     unrestricted: u.role_id.nil?)
+    })
+  end
+
+  # Create a committee member / staff login: a venture admin (role 2) gated by a
+  # custom role's permissions. Returns a one-time temp password.
+  def create_committee
+    role = App::Models::Role[client_id: current_client_id, id: params[:role_id]] ||
+           return_errors!('Pick a valid role', 422)
+    validate!(
+      'full_name' => App::Validate.text(params[:full_name], min: 2, max: 120, label: 'Name'),
+      'email'     => App::Validate.email(params[:email]),
+      'phone_number' => App::Validate.phone(params[:phone_number])
+    )
+    temp = SecureRandom.alphanumeric(10)
+    u = model.new(
+      client_id: current_client_id, full_name: params[:full_name].to_s.strip,
+      email: params[:email].to_s.strip.downcase, phone_number: params[:phone_number].presence,
+      role: User::ROLES[:admin], role_id: role.id, active: true,
+      extras: { 'title' => role.name }
+    )
+    u.password = temp
+    save(u) do |row|
+      App::Audit.record('committee.create', entity: row, client_id: current_client_id,
+                        summary: "Created committee member #{row.full_name} as #{role.name}",
+                        meta: { role_id: role.id, role: role.name })
+      return_success(row.as_pos.merge(temp_password: temp))
+    end
+  end
+
+  # Transfer / change a committee member's role (re-point role_id). Owner-admin
+  # (role_id nil) can't be demoted here — guard against self-lockout.
+  def assign_role
+    return_errors!("You can't change your own role", 422) if item.id == App.cu.id
+    role = App::Models::Role[client_id: current_client_id, id: params[:role_id]] ||
+           return_errors!('Pick a valid role', 422)
+    item.set(role_id: role.id)
+    item.extras = (item.extras || {}).merge('title' => role.name)
+    save(item) do |u|
+      App::Audit.record('user.assign', entity: u, client_id: current_client_id,
+                        summary: "Assigned #{u.full_name} to role #{role.name}", meta: { role_id: role.id })
+      return_success(u.as_pos)
+    end
+  end
+
+  # Hard-lock an account (separate from deactivate): blocks login + ends session.
+  def lock
+    return_errors!("You can't lock your own account", 422) if item.id == App.cu.id
+    item.set(locked_at: Time.now, lock_reason: params[:reason], current_session_id: nil)
+    save(item) do |u|
+      App::Audit.record('account.lock', entity: u, client_id: current_client_id,
+                        summary: "Locked #{u.full_name}", meta: { reason: params[:reason] })
+      return_success(u.as_pos)
+    end
+  end
+
+  def unlock
+    item.set(locked_at: nil, lock_reason: nil)
+    save(item) do |u|
+      App::Audit.record('account.unlock', entity: u, client_id: current_client_id, summary: "Unlocked #{u.full_name}")
+      return_success(u.as_pos)
+    end
+  end
+
+  # A user's login history (most recent first).
+  def login_history
+    return_success([]) unless App::Models.const_defined?(:LoginEvent)
+    rows = App::Models::LoginEvent.where(user_id: item.id).order(Sequel.desc(:created_at)).limit(50).all
+    return_success(rows.map(&:as_pos))
+  end
+
+  # Admin resets a venture user's password → one-time temp password.
+  def admin_reset_password
+    temp = SecureRandom.alphanumeric(10)
+    item.password = temp
+    item.current_session_id = nil
+    save(item) do |u|
+      App::Audit.record('password.reset', entity: u, client_id: current_client_id,
+                        summary: "Reset password for #{u.full_name}")
+      return_success(email: u.email, temp_password: temp)
+    end
+  end
+
+  # The caller's effective RBAC permissions. `all: true` for the venture
+  # owner-admin / super admin (every permission); otherwise the explicit list
+  # from their assigned committee role. Drives permission-based menus/buttons.
+  def my_permissions
+    u = App.cu.user_obj
+    perms = App::Permissions.for(u)
+    if perms == App::Permissions::ALL
+      return_success(all: true, permissions: App::Models::Role::PERMISSIONS)
+    else
+      return_success(all: false, permissions: perms)
+    end
+  end
+
   # Self-service edit of the caller's own contact details. Deliberately narrow:
   # only the owner's display name and phone — email is the login identity and
   # role/plot are association-managed, so neither is touched here.
@@ -54,6 +159,9 @@ class App::Services::Users < App::Services::Base
     if params.key?(:communication_prefs)
       u.extras = (u.extras || {}).merge('comm_prefs' => params[:communication_prefs])
     end
+    # Vendor company details + emergency contact (extras, no migration).
+    u.extras = (u.extras || {}).merge('company' => params[:company]) if params.key?(:company)
+    u.extras = (u.extras || {}).merge('emergency_contact' => params[:emergency_contact]) if params.key?(:emergency_contact)
     save(u) do
       App::Audit.record('profile.update', entity: u, client_id: u.client_id,
                         summary: "#{u.full_name} updated their profile")

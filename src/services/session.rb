@@ -6,6 +6,12 @@ class App::Services::Session < App::Services::Base
       return_errors!('Invalid email or password', 401)
     end
 
+    # Hard lock (admin-set) blocks login even with the right password.
+    if user.respond_to?(:locked_at) && user.locked_at
+      return_errors!('This account is locked. Contact the association office.', 403)
+    end
+
+    log_login(user)
     user.last_logged_in_at = Time.now
     user.current_session_id = CurrentUser.encoded_token(user)
     user.save_changes
@@ -45,6 +51,17 @@ class App::Services::Session < App::Services::Base
   end
 
   private
+
+  # Record a successful login in the per-user history. Best-effort.
+  def log_login(user)
+    return unless App::Models.const_defined?(:LoginEvent)
+    App::Models::LoginEvent.create(
+      user_id: user.id, client_id: user.client_id, success: true,
+      ip: (App.cu.ip rescue nil), user_agent: (request.env['HTTP_USER_AGENT'] rescue nil)
+    )
+  rescue => e
+    App.logger.error("log_login failed: #{e.message}")
+  end
 
   # Is the shift_sessions table available? (Defined only once migrated — see
   # the model.) Lets login/logout no-op cleanly before the migration runs.

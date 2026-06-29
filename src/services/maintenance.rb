@@ -66,7 +66,54 @@ class App::Services::Maintenance < App::Services::Base
 
   def item(id = rp[:id]) = (@item ||= scoped[id] || return_errors!('Schedule not found', 404))
 
+  # --- vendor: inspections assigned to the calling vendor --------------------
+  def vendor_list
+    ds = scoped.where(active: true, assignee_staff_id: my_staff_id).order(Sequel.asc(:next_due_on))
+    return_success(ds.all.map(&:as_pos))
+  end
+
+  def vendor_get
+    s = vendor_item
+    return_success(s.as_pos.merge(logs: s.maintenance_logs.map(&:as_pos)))
+  end
+
+  # Vendor submits an inspection (report + outcome + optional recommendation +
+  # photos). Reuses log_completion (advances schedule, raises a ticket on issue).
+  def vendor_log
+    vendor_item # gate to the assigned vendor (sets @item)
+    if params[:recommendation].present?
+      params[:report] = "#{params[:report]}\nRecommendation: #{params[:recommendation]}".strip
+    end
+    res = log_completion
+    attach_inspection_photos(item)
+    App::Audit.record('maintenance.inspect', entity: item, client_id: current_client_id,
+                      summary: "Inspection logged for #{item.code}")
+    res
+  end
+
   private
+
+  def my_staff_id = App.cu.user_obj.extras&.dig('staff_id')
+
+  def vendor_item(id = rp[:id])
+    s = scoped[id] || return_errors!('Schedule not found', 404)
+    return_errors!('This inspection is not assigned to you', 403) unless s.assignee_staff_id.to_s == my_staff_id.to_s
+    @item = s
+  end
+
+  def attach_inspection_photos(s)
+    Array(params[:photos]).each do |p|
+      url = p.is_a?(Hash) ? p[:url] : p
+      next if url.to_s.empty?
+      App::Models::Photo.create(
+        client_id: current_client_id, url: url, caption: 'Inspection', kind: 'inspection',
+        category: 'maintenance', attachable_type: 'MaintenanceSchedule', attachable_id: s.id,
+        date: Date.today, code: "MPH-#{App::Models::Photo.where(client_id: current_client_id).count + 1}"
+      )
+    end
+  rescue => e
+    App.logger.error("inspection photo: #{e.message}")
+  end
 
   def set_assignee(s)
     return if params[:assignee_staff_id].to_s.empty?

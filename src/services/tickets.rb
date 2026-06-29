@@ -1,3 +1,5 @@
+require 'time' # Time.parse for visit scheduling
+
 class App::Services::Tickets < App::Services::Base
   def model = Ticket
 
@@ -26,7 +28,29 @@ class App::Services::Tickets < App::Services::Base
   def get
     enforce_vendor_scope!(item)
     return_success(item.as_pos.merge(photos: ticket_photos(item),
-                                     materials: item.materials.map(&:as_pos)))
+                                     materials: item.materials.map(&:as_pos),
+                                     events: item.events.map(&:as_pos)))
+  end
+
+  # Vendor/admin comment on the timeline (internal by default).
+  def add_comment
+    enforce_vendor_scope!(item)
+    validate!('body' => App::Validate.text(params[:body], min: 1, max: 2000, label: 'Comment'))
+    internal = params.key?(:internal) ? !!params[:internal] : true
+    log_event(item, kind: 'note', internal: internal, body: params[:body].to_s.strip)
+    App::Audit.record('ticket.comment', entity: item, client_id: current_client_id, summary: "Comment on #{item.code}")
+    return_success(item.as_pos.merge(events: item.events_dataset.all.map(&:as_pos)))
+  end
+
+  # Vendor commits to a site-visit date.
+  def schedule_visit
+    enforce_vendor_scope!(item)
+    at = params[:scheduled_visit_at].present? ? (Time.parse(params[:scheduled_visit_at].to_s) rescue nil) : nil
+    return_errors!('A valid visit date is required', 422) unless at
+    item.update(scheduled_visit_at: at)
+    log_event(item, kind: 'visit', internal: false, body: "Site visit scheduled for #{at.strftime('%d %b %Y %H:%M')}")
+    App::Audit.record('ticket.schedule_visit', entity: item, client_id: current_client_id, summary: "Visit scheduled for #{item.code}")
+    return_success(item.as_pos.merge(events: item.events_dataset.all.map(&:as_pos)))
   end
 
   def create
@@ -68,7 +92,12 @@ class App::Services::Tickets < App::Services::Base
       return_errors!('Vendor not found', 404) unless vendor
       item.set(assignee: vendor.name, assignee_staff_id: vendor.id,
                status: (item.status == 'created' ? 'assigned' : item.status))
-      save(item) { |t| return_success(t.as_pos) }
+      save(item) do |t|
+        log_event(t, kind: 'assignment', internal: false, body: "Assigned to #{vendor.name}")
+        notify_vendor(vendor, kind: 'work_order', title: 'New work order assigned',
+                      body: "#{t.code} — #{t.subject}", link: '/vendor')
+        return_success(t.as_pos)
+      end
     elsif params[:assignee].present?
       item.assignee = params[:assignee]
       item.status = 'assigned' if item.status == 'created'
@@ -84,7 +113,11 @@ class App::Services::Tickets < App::Services::Base
     enforce_vendor_scope!(item)
     item.set(accepted_at: Time.now,
              status: (%w[assigned escalated].include?(item.status) ? 'accepted' : item.status))
-    save(item) { |t| return_success(t.as_pos) }
+    save(item) do |t|
+      log_event(t, kind: 'status', internal: false, body: 'Vendor accepted the assignment')
+      App::Audit.record('ticket.accept', entity: t, client_id: current_client_id, summary: "Accepted #{t.code}")
+      return_success(t.as_pos)
+    end
   end
 
   # Vendor declines → kicked back to the queue (unassigned) with a reason.
@@ -121,8 +154,11 @@ class App::Services::Tickets < App::Services::Base
     item.labour_cost_paise = (params[:labour_cost].to_f * 100).round if params.key?(:labour_cost)
     item.set(status: 'resolved', resolved_at: (item.resolved_at || Time.now))
     save(item) do |t|
+      log_event(t, kind: 'status', internal: false, body: 'Work completed — submitted for review')
+      App::Audit.record('ticket.complete', entity: t, client_id: current_client_id, summary: "Completed #{t.code}")
       notify_owner!(t)
-      return_success(t.as_pos.merge(photos: ticket_photos(t), materials: t.materials.map(&:as_pos)))
+      return_success(t.as_pos.merge(photos: ticket_photos(t), materials: t.materials.map(&:as_pos),
+                                    events: t.events_dataset.all.map(&:as_pos)))
     end
   end
 
@@ -140,6 +176,7 @@ class App::Services::Tickets < App::Services::Base
       created_by: App.cu.id
     )
     recompute_materials!(item)
+    log_event(item, kind: 'material', internal: true, body: "Added material: #{params[:item]} ×#{params[:quantity] || 1}")
     App::Audit.record('workorder.material.add', entity: item, client_id: current_client_id,
                       summary: "Added material '#{params[:item]}' to #{item.code}")
     return_success(item.as_pos.merge(materials: item.materials_dataset.all.map(&:as_pos)))
@@ -180,9 +217,12 @@ class App::Services::Tickets < App::Services::Base
     end
   end
 
-  # Helpdesk dashboard widgets.
+  # Helpdesk dashboard widgets. Vendor-scoped when called with assigned_to_me
+  # (the vendor portal dashboard) so a vendor only sees their own counts.
   def summary
-    rows = scoped.all
+    ds = scoped
+    ds = ds.where(assignee_staff_id: my_staff_id || -1) if qs[:assigned_to_me] == 'true'
+    rows = ds.all
     by   = ->(s) { rows.count { |t| t.status == s } }
     done = rows.select { |t| t.resolved_at && t.created_at }
     avg  = done.empty? ? 0 : (done.sum { |t| t.resolved_at - t.created_at } / done.length / 3600.0).round(1)
@@ -232,7 +272,92 @@ class App::Services::Tickets < App::Services::Base
     @item ||= scoped[id] || return_errors!('Ticket not found', 404)
   end
 
+  # --- vendor payments (read-only) -------------------------------------------
+  # Completed work orders for the calling vendor, with their cost + payment status.
+  def vendor_payments
+    ds = scoped.where(assignee_staff_id: my_staff_id, status: %w[resolved closed]).order(Sequel.desc(:resolved_at))
+    return_success(ds.all.map(&:as_pos))
+  end
+
+  # Admin sets the payment status on a work order (pending|approved|paid).
+  def set_payment_status
+    st = params[:status].to_s
+    return_errors!('Invalid status', 422) unless %w[pending approved paid].include?(st)
+    item.update(payment_status: st)
+    App::Audit.record('workorder.payment_status', entity: item, client_id: current_client_id,
+                      summary: "#{item.code} payment → #{st}")
+    # Notify the vendor when their payment is released.
+    if st == 'paid' && item.assignee_staff_id
+      v = App::Models::Staff[client_id: current_client_id, id: item.assignee_staff_id]
+      notify_vendor(v, kind: 'payment', title: 'Payment released', body: "Payment released for #{item.code}", link: '/vendor/payments') if v
+    end
+    return_success(item.as_pos)
+  end
+
+  # --- vendor support tickets (vendor is the CREATOR) ------------------------
+  def vendor_support_list
+    ds = scoped.where(created_by_user_id: App.cu.id, category: 'support').order(Sequel.desc(:created_at))
+    return_success(ds.all.map(&:as_pos))
+  end
+
+  def vendor_support_create
+    validate!('subject' => App::Validate.text(params[:subject], min: 3, max: 160, label: 'Subject'),
+              'description' => App::Validate.presence(params[:description], label: 'Description'))
+    obj = model.new(
+      client_id: current_client_id, subject: params[:subject], description: params[:description],
+      category: 'support', priority: params[:priority].presence || 'medium', status: 'created',
+      created_by_name: "#{App.cu.user_obj.full_name} (Vendor)", created_by_user_id: App.cu.id, reopen_count: 0
+    )
+    obj.code ||= next_code
+    obj.due_at = Time.now + (Ticket::SLA_HOURS[obj.priority] || 24) * 3600
+    save(obj) do |t|
+      App::Audit.record('support.create', entity: t, client_id: current_client_id, summary: "Vendor support: #{t.subject}")
+      return_success(t.as_pos)
+    end
+  end
+
+  def vendor_support_get
+    t = support_item
+    return_success(t.as_pos.merge(events: t.events.map(&:as_pos)))
+  end
+
+  def vendor_support_reply
+    t = support_item
+    validate!('body' => App::Validate.text(params[:body], min: 1, max: 2000, label: 'Reply'))
+    log_event(t, kind: 'note', internal: true, body: params[:body].to_s.strip)
+    return_success(t.as_pos.merge(events: t.events_dataset.all.map(&:as_pos)))
+  end
+
+  # Support tickets are gated to their vendor CREATOR (not the assignee).
+  def support_item(id = rp[:id])
+    t = scoped[id] || return_errors!('Ticket not found', 404)
+    return_errors!('Not allowed', 403) unless t.created_by_user_id == App.cu.id
+    t
+  end
+
   private
+
+  # Notify a vendor's portal login (resolved from their staff_id) of an event.
+  def notify_vendor(staff, kind:, title:, body:, link:)
+    user = App::Models::User
+           .where(client_id: current_client_id, role: App::Models::User::ROLES[:vendor], active: true).all
+           .find { |u| u.extras&.dig('staff_id').to_s == staff.id.to_s }
+    return unless user
+    App::Notify.create(user_id: user.id, client_id: current_client_id, kind: kind,
+                       title: title, body: body, link: link)
+  end
+
+  # Append a work-order timeline entry, stamped with the acting user.
+  def log_event(ticket, kind:, body:, internal: true, meta: {})
+    u = App.cu.user_obj
+    App::Models::TicketEvent.create(
+      ticket_id: ticket.id, client_id: ticket.client_id, kind: kind, body: body,
+      internal: internal, actor_name: u&.full_name, actor_id: u&.id, meta: meta || {}
+    )
+  rescue => e
+    App.logger.error("ticket event log failed: #{e.message}")
+    nil
+  end
 
   # Recompute the cached materials total on the ticket from its line items.
   def recompute_materials!(ticket)

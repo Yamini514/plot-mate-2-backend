@@ -15,6 +15,8 @@ class App::Models::Delivery < Sequel::Model
 
   def as_pos
     { id: id, code: code, courier: courier, agent: agent, resident_name: resident_name,
-      plot_no: plot_no, received_at: received_at, delivered_at: delivered_at, status: status }
+      plot_no: plot_no, received_at: received_at, delivered_at: delivered_at, status: status,
+      photo_url: (respond_to?(:photo_url) ? photo_url : nil),
+      mobile: (respond_to?(:mobile) ? mobile : nil) }
   end
 end

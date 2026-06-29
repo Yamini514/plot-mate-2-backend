@@ -1,5 +1,6 @@
 class App::Models::Ticket < Sequel::Model
   one_to_many :materials, class: 'App::Models::WorkOrderMaterial', key: :ticket_id, order: :created_at
+  one_to_many :events, class: 'App::Models::TicketEvent', key: :ticket_id, order: :created_at
 
   CATEGORIES = %w[maintenance security electrical plumbing cleaning amenities
                   parking documentation billing community other].freeze
@@ -96,7 +97,11 @@ class App::Models::Ticket < Sequel::Model
       # work-order costs (migration 0064)
       labour_cost: (labour_cost_paise || 0) / 100,
       materials_cost: (materials_cost_paise || 0) / 100,
-      total_cost: ((labour_cost_paise || 0) + (materials_cost_paise || 0)) / 100
+      total_cost: ((labour_cost_paise || 0) + (materials_cost_paise || 0)) / 100,
+      # visit scheduling (migration 0069)
+      scheduled_visit_at: (respond_to?(:scheduled_visit_at) ? scheduled_visit_at : nil),
+      # vendor payment status (migration 0070)
+      payment_status: (respond_to?(:payment_status) ? (payment_status || 'pending') : 'pending')
     }
   end
 end
