@@ -38,8 +38,18 @@ class App::Services::Staff < App::Services::Base
 
   # Derived performance metrics for a vendor: work-order volume, completion,
   # on-time %, reopen rate, total billed, and the average rating. All aggregate.
-  def performance
-    sid = item.id
+  def performance = performance_for(item)
+
+  # Vendor portal: the caller's OWN performance (resolved from their staff_id).
+  def my_performance
+    sid = App.cu.user_obj.extras&.dig('staff_id')
+    staff = sid && App::Models::Staff[client_id: current_client_id, id: sid]
+    return return_success(vendor: nil, total_orders: 0) unless staff
+    performance_for(staff)
+  end
+
+  def performance_for(staff)
+    sid = staff.id
     tickets = App::Models::Ticket.where(client_id: current_client_id, assignee_staff_id: sid)
     total     = tickets.count
     completed = tickets.where(status: %w[resolved closed]).count
@@ -50,7 +60,7 @@ class App::Services::Staff < App::Services::Base
     ratings = App::Models::VendorRating.where(client_id: current_client_id, staff_id: sid).all
     avg = ratings.empty? ? nil : (ratings.sum(&:score).to_f / ratings.size).round(2)
     return_success(
-      vendor: item.as_pos,
+      vendor: staff.as_pos,
       total_orders: total, completed: completed, reopened: reopened,
       on_time_pct: done.empty? ? nil : (on_time * 100 / done.size),
       completion_pct: total.zero? ? nil : (completed * 100 / total),

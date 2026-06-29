@@ -79,6 +79,7 @@ class App::Routes < Roda
       # Current-user routes (any authenticated role)
       r.on 'me' do
         r.get('info') { Users[r].info }
+        r.get('permissions') { Users[r].my_permissions }   # RBAC: caller's effective permissions
         r.get('settings') { Settings[r].show }   # read-only association config (any role)
         r.put('profile') { Users[r].update_self }      # self-edit own contact details
         r.put('update-password') { Users[r].update_password }
@@ -171,6 +172,11 @@ class App::Routes < Roda
 
         # 11. Feature management (per-venture toggles)
         r.on 'features' do
+          r.on 'catalogue' do
+            r.put(Integer)    { |id| PlatformFeatures[r, id: id].update_feature }
+            r.delete(Integer) { |id| PlatformFeatures[r, id: id].delete_feature }
+            r.post            { PlatformFeatures[r].create_feature }
+          end
           r.post(Integer, 'toggle') { |id| PlatformFeatures[r, id: id].toggle }
           r.get { PlatformFeatures[r].index }
         end
@@ -183,6 +189,7 @@ class App::Routes < Roda
       r.on 'admin' do
         admin_required!
         r.on 'users' do
+          permission_required!('committee.view')
           r.post(Integer, 'deactivate') { |id| Users[r, id: id].deactivate }
           r.post(Integer, 'activate')   { |id| Users[r, id: id].activate }
           do_crud(Users, r, 'CRUDL')
@@ -191,6 +198,7 @@ class App::Routes < Roda
 
         # Onboarding invites (members/owners) — admin issues, recipient accepts.
         r.on 'invites' do
+          permission_required!('owners.create')
           r.post(Integer, 'resend') { |id| Invites[r, id: id].resend }
           r.post(Integer, 'revoke') { |id| Invites[r, id: id].revoke }
           do_crud(Invites, r, 'CL')
@@ -199,6 +207,7 @@ class App::Routes < Roda
         # Approval queue (the request engine) — owner verification, plot claims,
         # ownership transfers, document verification.
         r.on 'approvals' do
+          permission_required!('owners.view')
           r.post(Integer, 'approve')         { |id| Approvals[r, id: id].approve }
           r.post(Integer, 'reject')          { |id| Approvals[r, id: id].reject }
           r.post(Integer, 'request-changes') { |id| Approvals[r, id: id].request_changes }
@@ -209,12 +218,14 @@ class App::Routes < Roda
         # Ownership transfers — initiate, attach deed/NOC, cancel. The decision
         # itself happens in the Approvals queue.
         r.on 'transfers' do
+          permission_required!('owners.edit')
           r.post('initiate')                { Transfers[r].initiate }
           r.post(Integer, 'documents')      { |id| Transfers[r, id: id].attach_document }
           r.post(Integer, 'cancel')         { |id| Transfers[r, id: id].cancel }
           do_crud(Transfers, r, 'RL')
         end
         r.on 'plots' do
+          permission_required!('plots.view')
           r.get('summary') { Plots[r].summary }
           r.post('import')  { Plots[r].import_rows }   # bulk upload (Excel/CSV) → upsert by plot_no
           r.post('generate') { Plots[r].generate_plots } # create empty plots from number ranges read off the map
@@ -237,6 +248,7 @@ class App::Routes < Roda
 
         # Interactive site plan: imported layout image + per-plot clickable regions.
         r.on 'plot-map' do
+          permission_required!('plots.view')
           r.put('layout')    { PlotMap[r].save_layout }
           r.delete('layout') { PlotMap[r].remove_layout }
           r.put('regions')   { PlotMap[r].save_regions }
@@ -245,6 +257,7 @@ class App::Routes < Roda
         end
 
         r.on 'billing' do
+          permission_required!('payments.view')
           r.on('plans') { do_crud(Plans, r, 'CRUDL') }
 
           r.on 'invoices' do
@@ -252,7 +265,7 @@ class App::Routes < Roda
             r.get('defaulters')          { Invoices[r].defaulters }
             r.get('demand-statement')    { Invoices[r].demand_statement } # ?plot_id=
             r.get('fund-summary')        { Invoices[r].fund_summary }     # collected by category (corpus etc.)
-            r.get('export')              { Invoices[r].export_csv }
+            r.get('export')              { permission_required!('payments.export'); Invoices[r].export_csv }
             r.post('generate')           { Invoices[r].generate }
             r.post('charge')             { Invoices[r].charge }           # one-off, single owner
             r.post('status')             { Invoices[r].set_status }       # bulk transition
@@ -264,8 +277,8 @@ class App::Routes < Roda
 
           r.on 'payments' do
             r.get(Integer, 'receipt')   { |id| Payments[r, id: id].receipt }
-            r.post(Integer, 'verify')   { |id| Payments[r, id: id].verify }
-            r.post(Integer, 'reject')   { |id| Payments[r, id: id].reject }
+            r.post(Integer, 'verify')   { |id| permission_required!('payments.approve'); Payments[r, id: id].verify }
+            r.post(Integer, 'reject')   { |id| permission_required!('payments.approve'); Payments[r, id: id].reject }
             r.post(Integer, 'reconcile'){ |id| Payments[r, id: id].reconcile }
             do_crud(Payments, r, 'CRL')                                   # immutable records
           end
@@ -282,8 +295,10 @@ class App::Routes < Roda
         end
 
         r.on 'complaints' do
+          feature_required!('complaints')
+          permission_required!('complaints.view')
           r.get('summary')              { Complaints[r].summary }
-          r.post(Integer, 'assign')   { |id| Complaints[r, id: id].assign }
+          r.post(Integer, 'assign')   { |id| permission_required!('complaints.assign'); Complaints[r, id: id].assign }
           r.post(Integer, 'resolve')  { |id| Complaints[r, id: id].resolve }
           r.post(Integer, 'escalate') { |id| Complaints[r, id: id].escalate }
           r.post(Integer, 'reopen')   { |id| Complaints[r, id: id].reopen }
@@ -293,11 +308,12 @@ class App::Routes < Roda
         end
 
         r.on 'helpdesk' do
+          permission_required!('workorders.view')
           r.on 'tickets' do
             r.get('summary')            { Tickets[r].summary }
-            r.get('export')             { Tickets[r].export_csv }
+            r.get('export')             { permission_required!('workorders.export'); Tickets[r].export_csv }
             r.post(Integer, 'transition') { |id| Tickets[r, id: id].transition }
-            r.post(Integer, 'assign')     { |id| Tickets[r, id: id].assign }
+            r.post(Integer, 'assign')     { |id| permission_required!('workorders.assign'); Tickets[r, id: id].assign }
             r.post(Integer, 'accept')     { |id| Tickets[r, id: id].accept }
             r.post(Integer, 'reject')     { |id| Tickets[r, id: id].reject }
             r.post(Integer, 'photos')     { |id| Tickets[r, id: id].attach_photo }
@@ -305,12 +321,15 @@ class App::Routes < Roda
             r.post(Integer, 'escalate')   { |id| Tickets[r, id: id].escalate }
             r.post(Integer, 'materials')  { |id| Tickets[r, id: id].add_material }
             r.delete(Integer, 'materials', Integer) { |id, mid| Tickets[r, id: id, material: mid].remove_material }
+            r.post(Integer, 'comment')    { |id| Tickets[r, id: id].add_comment }
+            r.post(Integer, 'payment-status') { |id| Tickets[r, id: id].set_payment_status }
             do_crud(Tickets, r, 'CRUDL')
           end
         end
 
         # --- Community ---
         r.on 'announcements' do
+          permission_required!('notices.view')
           r.post(Integer, 'pin')     { |id| Announcements[r, id: id].pin }
           r.post(Integer, 'ack')     { |id| Announcements[r, id: id].ack }
           r.post(Integer, 'comment') { |id| Announcements[r, id: id].comment }
@@ -319,27 +338,35 @@ class App::Routes < Roda
           do_crud(Announcements, r, 'CRUDL')
         end
         r.on 'events' do
+          permission_required!('notices.view')
           r.post(Integer, 'rsvp') { |id| Events[r, id: id].rsvp }
           do_crud(Events, r, 'CRUDL')
         end
         r.on 'polls' do
+          permission_required!('notices.view')
           r.post(Integer, 'close') { |id| Polls[r, id: id].close }
           r.post(Integer, 'vote')  { |id| Polls[r, id: id].vote }
           do_crud(Polls, r, 'CRUDL')
         end
-        r.on('amenities') { do_crud(Amenities, r, 'CRUDL') }
+        r.on('amenities') { feature_required!('facility_booking'); permission_required!('notices.view'); do_crud(Amenities, r, 'CRUDL') }
         r.on 'bookings' do
+          feature_required!('facility_booking')
+          permission_required!('notices.view')
           r.post(Integer, 'status') { |id| Bookings[r, id: id].set_status }
           do_crud(Bookings, r, 'CRUDL')
         end
 
         # --- Gate (admin view) ---
         r.on 'visitors' do
+          feature_required!('visitors')
+          permission_required!('support.view')
           r.post(Integer, 'action') { |id| Visitors[r, id: id].action }
           do_crud(Visitors, r, 'CRUDL')
         end
-        r.on('deliveries') { do_crud(Deliveries, r, 'CRUDL') }
+        r.on('deliveries') { feature_required!('visitors'); permission_required!('support.view'); do_crud(Deliveries, r, 'CRUDL') }
         r.on 'security' do
+          feature_required!('visitors')
+          permission_required!('support.view')
           r.get('overview') { Security[r].overview }
           r.get('guard-sessions') { Security[r].guard_sessions }
           r.on 'incidents' do
@@ -351,18 +378,20 @@ class App::Routes < Roda
 
         # --- Content ---
         r.on 'documents' do
+          permission_required!('documents.view')
           r.get('expiring')          { Documents[r].expiring }   # ?days=30
           r.post('presign')          { Documents[r].presign }
           r.on('folders')            { do_crud(DocumentFolders, r, 'CLD') }
-          r.post(Integer, 'approve') { |id| Documents[r, id: id].approve }
+          r.post(Integer, 'approve') { |id| permission_required!('documents.approve'); Documents[r, id: id].approve }
           r.post(Integer, 'versions') { |id| Documents[r, id: id].new_version }
           r.get(Integer, 'versions')  { |id| Documents[r, id: id].versions }
           do_crud(Documents, r, 'CRUDL')
         end
-        r.on('photos') { do_crud(Photos, r, 'CRUDL') }
+        r.on('photos') { permission_required!('documents.view'); do_crud(Photos, r, 'CRUDL') }
 
         # --- Org / finance / admin ---
         r.on 'staff' do
+          permission_required!('vendors.view')
           r.get('eligible')          { Staff[r].eligible }   # verified vendors for assignment
           r.get(Integer, 'performance') { |id| Staff[r, id: id].performance }
           r.post(Integer, 'verify')  { |id| Staff[r, id: id].verify }
@@ -374,6 +403,8 @@ class App::Routes < Roda
 
         # Preventive / recurring maintenance schedules + completion logs.
         r.on 'maintenance' do
+          feature_required!('maintenance')
+          permission_required!('maintenance.view')
           r.post(Integer, 'log')    { |id| Maintenance[r, id: id].log_completion }
           r.post(Integer, 'toggle') { |id| Maintenance[r, id: id].toggle_active }
           do_crud(Maintenance, r, 'CRUDL')
@@ -381,6 +412,7 @@ class App::Routes < Roda
 
         # Capital / improvement projects: budget, milestones, progress, delays.
         r.on 'projects' do
+          permission_required!('projects.view')
           r.post(Integer, 'update')   { |id| Projects[r, id: id].add_update }
           r.post(Integer, 'photos')   { |id| Projects[r, id: id].attach_photo }
           r.post(Integer, 'complete') { |id| Projects[r, id: id].complete }
@@ -393,11 +425,13 @@ class App::Routes < Roda
           do_crud(Projects, r, 'CRUDL')
         end
         r.on 'reminders' do
+          permission_required!('payments.view')
           r.post('generate')      { Reminders[r].generate }   # auto-schedule for all defaulters
           r.post(Integer, 'send') { |id| Reminders[r, id: id].send_now }
           do_crud(Reminders, r, 'CRUDL')
         end
         r.on 'treasury' do
+          permission_required!('finance.view')
           r.on 'expenses' do
             r.get('by-category') { Expenses[r].by_category }
             do_crud(Expenses, r, 'CRUDL')
@@ -409,33 +443,90 @@ class App::Routes < Roda
           end
         end
         r.on 'settings' do
+          permission_required!('settings.view')
           r.post('test-email') { Settings[r].test_email }
           r.get { Settings[r].show }
-          r.put { Settings[r].update }
+          r.put { permission_required!('settings.configure'); Settings[r].update }
         end
-        r.on('reports') { r.get('overview') { Reports[r].overview } }
-        r.on('directory') { Directory[r].list }
+        r.on('reports') { permission_required!('reports.view'); r.get('overview') { Reports[r].overview } }
+        r.on('directory') { permission_required!('owners.view'); Directory[r].list }
 
         # Custom committee roles + permissions (the approval matrix references
-        # these by name; matrix itself is saved via /admin/settings).
-        r.on('roles') { do_crud(Roles, r, 'CRUDL') }
+        # these by name; matrix itself is saved via /admin/settings). Managing
+        # roles is itself a committee.assign capability.
+        r.on 'roles' do
+          permission_required!('committee.assign')
+          r.post(Integer, 'clone')  { |id| Roles[r, id: id].clone }
+          r.post(Integer, 'toggle') { |id| Roles[r, id: id].toggle_active }
+          r.get(Integer, 'users')   { |id| Roles[r, id: id].users }
+          do_crud(Roles, r, 'CRUDL')
+        end
+
+        # Committee / staff members (venture admin-role users gated by a role).
+        r.on 'committee' do
+          permission_required!('committee.view')
+          r.get(Integer, 'login-history')    { |id| Users[r, id: id].login_history }
+          r.post(Integer, 'assign-role')     { |id| permission_required!('committee.assign'); Users[r, id: id].assign_role }
+          r.post(Integer, 'reset-password')  { |id| permission_required!('committee.edit'); Users[r, id: id].admin_reset_password }
+          r.post(Integer, 'deactivate')      { |id| permission_required!('committee.edit'); Users[r, id: id].deactivate }
+          r.post(Integer, 'activate')        { |id| permission_required!('committee.edit'); Users[r, id: id].activate }
+          r.post(Integer, 'lock')            { |id| permission_required!('committee.edit'); Users[r, id: id].lock }
+          r.post(Integer, 'unlock')          { |id| permission_required!('committee.edit'); Users[r, id: id].unlock }
+          r.post                             { permission_required!('committee.create'); Users[r].create_committee }
+          r.get                              { Users[r].committee_list }
+        end
         # future admin resources go here
       end
 
       # --- Guard-only -------------------------------------------------------
       r.on 'guard' do
         guard_required!
+        r.on 'notifications' do
+          r.get('unread')         { Notifications[r].unread }
+          r.post('read-all')      { Notifications[r].mark_all_read }
+          r.post(Integer, 'read') { |id| Notifications[r, id: id].mark_read }
+          r.get                   { Notifications[r].list }
+        end
+        r.on 'support' do
+          r.get(Integer)           { |id| Tickets[r, id: id].vendor_support_get }
+          r.post(Integer, 'reply') { |id| Tickets[r, id: id].vendor_support_reply }
+          r.post { Tickets[r].vendor_support_create }
+          r.get  { Tickets[r].vendor_support_list }
+        end
         r.on 'tickets' do
           r.get  { Tickets[r, mine: 'true'].list }
           r.post { Tickets[r].create }
         end
         r.on 'visitors' do
+          r.get('lookup')          { Visitors[r].lookup }   # pass-code / QR lookup at the gate
           r.post(Integer, 'action') { |id| Visitors[r, id: id].action }
           do_crud(Visitors, r, 'CRL')
         end
         r.on 'deliveries' do
           r.post(Integer, 'handover') { |id| Deliveries[r, id: id].handover }
           do_crud(Deliveries, r, 'CRL')
+        end
+        r.on 'vehicles' do
+          r.post(Integer, 'exit') { |id| VehicleLogs[r, id: id].exit }
+          do_crud(VehicleLogs, r, 'CRL')
+        end
+        r.on 'domestic' do
+          r.post(Integer, 'entry') { |id| DomesticWorkers[r, id: id].entry }
+          r.post(Integer, 'exit')  { |id| DomesticWorkers[r, id: id].exit }
+          do_crud(DomesticWorkers, r, 'CRUL')
+        end
+        r.get('vendors') { GuardReports[r].vendors }   # verify vendor assignment at the gate
+        r.get('gate-register') { GuardReports[r].gate_register }   # unified searchable log
+        r.on 'lost-found' do
+          r.post(Integer, 'claim') { |id| LostFound[r, id: id].claim }
+          r.post(Integer, 'close') { |id| LostFound[r, id: id].close }
+          do_crud(LostFound, r, 'CRUL')
+        end
+        r.on 'patrols' do
+          r.post(Integer, 'start')      { |id| Patrols[r, id: id].start }
+          r.post(Integer, 'checkpoint') { |id| Patrols[r, id: id].checkpoint }
+          r.post(Integer, 'complete')   { |id| Patrols[r, id: id].complete }
+          do_crud(Patrols, r, 'CRL')
         end
         r.on 'incidents' do
           r.post(Integer, 'status') { |id| Incidents[r, id: id].set_status }
@@ -454,13 +545,55 @@ class App::Routes < Roda
       # Tickets service enforces that they can only touch their own assignments.
       r.on 'vendor' do
         vendor_required!
+        r.get('performance') { Staff[r].my_performance }
+        r.on 'notifications' do
+          r.get('unread')         { Notifications[r].unread }
+          r.post('read-all')      { Notifications[r].mark_all_read }
+          r.post(Integer, 'read') { |id| Notifications[r, id: id].mark_read }
+          r.get                   { Notifications[r].list }
+        end
+        r.on 'complaints' do
+          r.get(Integer)                 { |id| Complaints[r, id: id].vendor_get }
+          r.post(Integer, 'note')        { |id| Complaints[r, id: id].vendor_note }
+          r.post(Integer, 'attachments') { |id| Complaints[r, id: id].vendor_attach }
+          r.post(Integer, 'resolve')     { |id| Complaints[r, id: id].vendor_resolve }
+          r.get { Complaints[r].vendor_list }
+        end
+        r.on 'maintenance' do
+          r.get(Integer)         { |id| Maintenance[r, id: id].vendor_get }
+          r.post(Integer, 'log') { |id| Maintenance[r, id: id].vendor_log }
+          r.get { Maintenance[r].vendor_list }
+        end
+        r.on 'projects' do
+          r.get(Integer)            { |id| Projects[r, id: id].vendor_get }
+          r.post(Integer, 'update') { |id| Projects[r, id: id].vendor_update }
+          r.post(Integer, 'photos') { |id| Projects[r, id: id].vendor_photo }
+          r.get { Projects[r].vendor_list }
+        end
+        r.on 'documents' do
+          r.post(Integer, 'versions') { |id| Documents[r, id: id].member_new_version } # renew own doc
+          r.post { Documents[r].vendor_upload }
+          r.get  { Documents[r].vendor_list }
+        end
+        r.on('payments') { Tickets[r].vendor_payments }
+        r.on 'support' do
+          r.get(Integer)           { |id| Tickets[r, id: id].vendor_support_get }
+          r.post(Integer, 'reply') { |id| Tickets[r, id: id].vendor_support_reply }
+          r.post { Tickets[r].vendor_support_create }
+          r.get  { Tickets[r].vendor_support_list }
+        end
         r.on 'tickets' do
+          r.get('summary')              { Tickets[r, assigned_to_me: 'true'].summary }
           r.get(Integer)                { |id| Tickets[r, id: id].get }
           r.post(Integer, 'accept')     { |id| Tickets[r, id: id].accept }
           r.post(Integer, 'reject')     { |id| Tickets[r, id: id].reject }
           r.post(Integer, 'transition') { |id| Tickets[r, id: id].transition }
           r.post(Integer, 'photos')     { |id| Tickets[r, id: id].attach_photo }
           r.post(Integer, 'complete')   { |id| Tickets[r, id: id].complete }
+          r.post(Integer, 'comment')    { |id| Tickets[r, id: id].add_comment }
+          r.post(Integer, 'schedule')   { |id| Tickets[r, id: id].schedule_visit }
+          r.post(Integer, 'materials')  { |id| Tickets[r, id: id].add_material }
+          r.delete(Integer, 'materials', Integer) { |id, mid| Tickets[r, id: id, material: mid].remove_material }
           r.get { Tickets[r, assigned_to_me: 'true'].list }
         end
       end
@@ -586,6 +719,24 @@ class App::Routes < Roda
 
   def admin_required!
     forbidden! unless App.cu.user_obj&.admin?
+  end
+
+  # RBAC: require a specific "module.action" permission. The venture owner-admin
+  # and super admin hold all permissions; committee/staff are gated by their
+  # assigned role. A denial is audited so privilege-escalation attempts surface.
+  def permission_required!(perm)
+    u = App.cu.user_obj
+    return if u && App::Permissions.allow?(u, perm)
+    App::Audit.record('permission.denied', actor: u, client_id: (u&.client_id),
+                      summary: "Denied #{perm} for #{u&.full_name}", meta: { permission: perm })
+    forbidden!
+  end
+
+  # Block a module whose platform feature is switched off for this venture (the
+  # super-admin Feature management toggles). Defaults to allowed if unknown.
+  def feature_required!(key)
+    c = current_client_id && App::Models::Client[current_client_id]
+    forbidden! unless App::Services::PlatformFeatures::Resolver.enabled?(c, key)
   end
 
   def super_admin_required!

@@ -119,7 +119,81 @@ class App::Services::GuardReports < App::Services::Base
     return_success(found: false)
   end
 
+  # Vendor gate verification: verified vendors + their open work-order count, so
+  # the guard can confirm a vendor is assigned active work before allowing entry.
+  def vendors
+    cid = current_client_id
+    rows = App::Models::Staff.where(client_id: cid, kind: 'vendor', verified: true).all
+    return return_success([]) if rows.empty?
+    open_counts = App::Models::Ticket
+                  .where(client_id: cid, assignee_staff_id: rows.map(&:id))
+                  .where(status: App::Models::Ticket::OPEN_STATUSES)
+                  .group_and_count(:assignee_staff_id).all
+                  .to_h { |r| [r[:assignee_staff_id], r[:count]] }
+    q = qs[:search].to_s.strip.downcase
+    rows = rows.select { |s| s.name.to_s.downcase.include?(q) || s.phone.to_s.include?(q) } unless q.empty?
+    return_success(rows.map do |s|
+      { id: s.id, name: s.name, phone: s.phone, categories: (s.categories || []),
+        license_expiry: s.license_expiry, insurance_expiry: s.insurance_expiry,
+        open_orders: open_counts[s.id] || 0,
+        compliant: !expired?(s.license_expiry) && !expired?(s.insurance_expiry) }
+    end)
+  rescue => e
+    App.logger.error("guard vendors error: #{e.message}")
+    return_success([])
+  end
+
+  # Unified, searchable gate register across visitors, deliveries, vehicles and
+  # domestic staff — one chronological feed the guard/admin can filter + search.
+  def gate_register
+    cid = current_client_id
+    q   = qs[:search].to_s.strip.downcase
+    kind = qs[:kind].to_s
+    rows = []
+
+    if kind.empty? || kind == 'visitor'
+      Visitor.where(client_id: cid).order(Sequel.desc(:created_at)).limit(200).each do |v|
+        rows << reg_row('visitor', v.code, v.name, "Plot #{v.plot_no}", v.status, v.check_in || v.created_at, v.check_out)
+      end
+    end
+    if kind.empty? || kind == 'delivery'
+      Delivery.where(client_id: cid).order(Sequel.desc(:created_at)).limit(200).each do |d|
+        rows << reg_row('delivery', d.code, d.courier, "Plot #{d.plot_no}", d.status, d.received_at || d.created_at, d.delivered_at)
+      end
+    end
+    if (kind.empty? || kind == 'vehicle') && App::Models.const_defined?(:VehicleLog)
+      VehicleLog.where(client_id: cid).order(Sequel.desc(:created_at)).limit(200).each do |v|
+        rows << reg_row('vehicle', v.code, v.vehicle_no, v.plot_no.to_s.empty? ? v.owner_kind : "Plot #{v.plot_no}", v.status, v.entry_at, v.exit_at)
+      end
+    end
+    if (kind.empty? || kind == 'domestic') && App::Models.const_defined?(:DomesticAttendance)
+      App::Models::DomesticAttendance.where(client_id: cid).order(Sequel.desc(:created_at)).limit(200).each do |a|
+        w = App::Models::DomesticWorker[a.worker_id]
+        rows << reg_row('domestic', "ATT-#{a.id}", w&.name, w ? "#{w.worker_type} · Plot #{w.plot_no}" : nil, a.exit_at ? 'exited' : 'inside', a.entry_at, a.exit_at)
+      end
+    end
+
+    rows = rows.select { |r| "#{r[:name]} #{r[:detail]} #{r[:code]}".downcase.include?(q) } unless q.empty?
+    rows = rows.select { |r| r[:status] == 'rejected' } if qs[:rejected] == 'true'
+    rows.sort_by! { |r| r[:at].to_s }
+    rows.reverse!
+    return_success(rows.first(300))
+  rescue => e
+    App.logger.error("gate_register error: #{e.message}")
+    return_success([])
+  end
+
   private
+
+  def reg_row(kind, code, name, detail, status, at, exit_at)
+    { kind: kind, code: code, name: name, detail: detail, status: status, at: at, exit_at: exit_at }
+  end
+
+  def expired?(date)
+    date && date < Date.today
+  rescue StandardError
+    false
+  end
 
   def hour_label(h)
     suffix = h < 12 ? 'a' : 'p'

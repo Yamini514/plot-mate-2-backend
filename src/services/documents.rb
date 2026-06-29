@@ -149,6 +149,34 @@ class App::Services::Documents < App::Services::Base
     end
   end
 
+  # Vendor's own compliance documents (license/insurance/certification).
+  def vendor_list
+    rows = scoped.where(active: true, owner_user_id: App.cu.id)
+                 .exclude(superseded: true).order(Sequel.desc(:date)).all
+    return_success(rows.map(&:as_pos))
+  end
+
+  # Vendor uploads a compliance document → lands pending admin verification.
+  def vendor_upload
+    validate!('name' => App::Validate.text(params[:name], min: 1, max: 160, label: 'Name'),
+              'url'  => App::Validate.presence(params[:url], label: 'File'))
+    u = App.cu.user_obj
+    obj = model.new(
+      client_id: current_client_id, name: params[:name], url: params[:url], size: params[:size],
+      category: params[:category].presence || 'Compliance',
+      doc_type: params[:doc_type].presence || 'other',
+      expiry_date: params[:expiry_date].presence, visibility: 'admin',
+      owner_user_id: u.id, owner_name: u.full_name,
+      uploaded_by: u.full_name, uploaded_by_user_id: u.id, date: Date.today, approved: false
+    )
+    obj.code ||= "DOC-#{scoped.count + 1}"
+    save(obj) do |d|
+      App::Audit.record('document.upload', entity: d, client_id: d.client_id,
+                        summary: "#{u.full_name} uploaded #{d.name} (pending verification)")
+      return_success(d.as_pos)
+    end
+  end
+
   # Owner replaces (uploads a new version of) their OWN document. Ownership-gated
   # then reuses the same version-chain logic; the new version lands pending review.
   def member_new_version

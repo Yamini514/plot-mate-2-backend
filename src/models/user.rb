@@ -195,6 +195,11 @@ class App::Models::User < Sequel::Model
       emergency_contacts: respond_to?(:emergency_contacts) ? (emergency_contacts || []) : [],
       nominees: respond_to?(:nominees) ? (nominees || []) : [],
       communication_prefs: extras&.dig('comm_prefs') || {},
+      role_id: (respond_to?(:role_id) ? role_id : nil),
+      locked: (respond_to?(:locked_at) ? !locked_at.nil? : false),
+      lock_reason: (respond_to?(:lock_reason) ? lock_reason : nil),
+      company: extras&.dig('company'),
+      emergency_contact: extras&.dig('emergency_contact'),
       block_reason: respond_to?(:block_reason) ? block_reason : nil,
       last_logged_in_at: last_logged_in_at,
       created_at: created_at

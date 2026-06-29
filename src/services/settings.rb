@@ -8,7 +8,13 @@ class App::Services::Settings < App::Services::Base
     'document_categories'  => ['Legal', 'Financial', 'Meeting Minutes', 'Layout', 'Maintenance', 'Other'],
     'ticket_categories'    => %w[maintenance security electrical plumbing cleaning amenities parking documentation billing community other],
     'ticket_sla_hours'     => { 'low' => 72, 'medium' => 24, 'high' => 8, 'critical' => 1 },
-    'announcement_channels' => %w[in_app email whatsapp]
+    'announcement_channels' => %w[in_app email whatsapp],
+    # --- Security / gate lists ---
+    'visitor_types'        => %w[Guest Family Delivery Cab Vendor Other],
+    'vehicle_types'        => %w[Car Bike Commercial Emergency Other],
+    'delivery_companies'   => ['Amazon', 'Flipkart', 'Swiggy', 'Zomato', 'Blue Dart', 'DTDC', 'India Post', 'Other'],
+    'domestic_staff_types' => %w[Maid Driver Gardener Housekeeping Cook Electrician Plumber Other],
+    'incident_categories'  => ['Theft', 'Trespassing', 'Fire', 'Medical', 'Altercation', 'Vandalism', 'Other']
   }.freeze
 
   # Effective lists for a venture (stored over defaults). Callers needing a
@@ -98,7 +104,17 @@ class App::Services::Settings < App::Services::Base
         s = s.reject { |k, _| k.to_s == 'whatsapp' }
       end
     end
-    s.merge(name: c.name, email: c.email, 'lists' => self.class.lists_for(c))
+    s.merge(name: c.name, email: c.email, 'lists' => self.class.lists_for(c),
+            'features' => feature_payload(c))
+  end
+
+  # Enabled-feature map + the admin nav hrefs to hide, so the frontend can gate
+  # modules off the same per-venture toggles the super admin controls.
+  def feature_payload(c)
+    r = App::Services::PlatformFeatures::Resolver
+    { 'enabled' => r.state_map(c), 'disabled_nav' => r.disabled_nav(c) }
+  rescue StandardError
+    { 'enabled' => {}, 'disabled_nav' => [] }
   end
 
   # Preserve the stored SMTP password when the incoming payload leaves it blank

@@ -26,6 +26,27 @@ class App::Services::Projects < App::Services::Base
     return_success(detail_payload(p, member: true))
   end
 
+  # --- vendor: projects assigned to the calling vendor -----------------------
+  def vendor_list
+    rows = scoped.where(vendor_staff_id: my_staff_id).order(Sequel.desc(:created_at)).all
+    return_success(rows.map(&:as_pos))
+  end
+
+  def vendor_get
+    vendor_item
+    return_success(detail_payload(item))
+  end
+
+  def vendor_update
+    vendor_item
+    add_update
+  end
+
+  def vendor_photo
+    vendor_item
+    attach_photo
+  end
+
   def create
     p = Project.new(coerced)
     p.client_id = current_client_id
@@ -144,6 +165,14 @@ class App::Services::Projects < App::Services::Base
   end
 
   def item(id = rp[:id]) = (@item ||= scoped[id] || return_errors!('Project not found', 404))
+
+  def my_staff_id = App.cu.user_obj.extras&.dig('staff_id')
+
+  def vendor_item(id = rp[:id])
+    p = scoped[id] || return_errors!('Project not found', 404)
+    return_errors!('This project is not assigned to you', 403) unless p.vendor_staff_id.to_s == my_staff_id.to_s
+    @item = p
+  end
 
   private
 
