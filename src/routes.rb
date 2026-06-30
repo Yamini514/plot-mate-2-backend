@@ -86,6 +86,15 @@ class App::Routes < Roda
         r.post('logout') { Session[r].logout }   # close the session (and any open guard shift)
       end
 
+      # File uploads (presigned S3 PUT) — available to ANY authenticated role, not
+      # just /admin: avatars, complaint/incident photos and member/vendor documents
+      # are uploaded from every surface. The service scopes each key to the caller's
+      # own client_id, so a user can only ever write under their own venture.
+      r.on 'uploads' do
+        r.post('presign')          { Uploads[r].presign }   # image (or inline fallback)
+        r.post('document-presign') { Documents[r].presign } # arbitrary file
+      end
+
       # --- Super-admin only (platform layer) --------------------------------
       # Sits above all ventures: review onboarding requests, activate/suspend
       # workspaces. Not tenant-scoped.
@@ -194,7 +203,7 @@ class App::Routes < Roda
           r.post(Integer, 'activate')   { |id| Users[r, id: id].activate }
           do_crud(Users, r, 'CRUDL')
         end
-        r.on('uploads') { r.post('presign') { Uploads[r].presign } } # presigned S3 URL (or inline fallback)
+        # (image/document presign moved to the shared, auth-only /uploads block above)
 
         # Onboarding invites (members/owners) — admin issues, recipient accepts.
         r.on 'invites' do
@@ -380,7 +389,6 @@ class App::Routes < Roda
         r.on 'documents' do
           permission_required!('documents.view')
           r.get('expiring')          { Documents[r].expiring }   # ?days=30
-          r.post('presign')          { Documents[r].presign }
           r.on('folders')            { do_crud(DocumentFolders, r, 'CLD') }
           r.post(Integer, 'approve') { |id| permission_required!('documents.approve'); Documents[r, id: id].approve }
           r.post(Integer, 'versions') { |id| Documents[r, id: id].new_version }
