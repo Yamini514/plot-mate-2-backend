@@ -19,3 +19,4 @@ class App::Models::DomesticWorker < Sequel::Model
       last_seen: (last&.entry_at || last&.created_at) }
   end
 end
+ 
