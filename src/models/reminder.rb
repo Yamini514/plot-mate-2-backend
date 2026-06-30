@@ -1,5 +1,6 @@
 class App::Models::Reminder < Sequel::Model
-  CHANNELS = %w[whatsapp sms email].freeze
+  # SMS retired — reminders go out over WhatsApp + email only.
+  CHANNELS = %w[whatsapp email].freeze
   # 'cancelled' is set automatically when the owner clears their dues.
   STATUSES = %w[scheduled sent responded cancelled].freeze
 
